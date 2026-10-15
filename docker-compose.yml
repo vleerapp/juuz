@@ -1,0 +1,17 @@
+services:
+  juuz:
+    image: ghcr.io/vleerapp/juuz:nightly
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      JUUZ_ADMIN_PASSWORD: change-me
+      JUUZ_OMM: "true"
+      JUUZ_LASTFM_API_KEY: ""
+      JUUZ_LASTFM_SECRET: ""
+    volumes:
+      - data:/data
+      - /path/to/your/music:/music
+
+volumes:
+  data:
