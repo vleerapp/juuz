@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod ids;
+pub mod jukebox;
 pub mod lastfm;
 pub mod live;
 pub mod lyrics;
@@ -114,6 +115,17 @@ pub fn init(mut cfg: Config) -> Result<Server> {
         .omm
         .enabled
         .then(|| Arc::new(omm::Client::for_uploads(&cfg.omm)));
+    let jukebox = jukebox::Jukebox::new(
+        db.clone(),
+        crypto.clone(),
+        cfg.listen
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(4533),
+        live.clone(),
+    );
+    jukebox.start();
     let state = AppState {
         db,
         cfg: Arc::new(cfg),
@@ -133,7 +145,9 @@ pub fn init(mut cfg: Config) -> Result<Server> {
         upload_lock: Default::default(),
         now_playing: Default::default(),
         live,
+        jukebox,
     };
+    jukebox::stats::spawn(state.clone());
     Ok(Server {
         state,
         _watcher: watcher,

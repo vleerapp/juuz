@@ -109,6 +109,15 @@ pub fn by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<User>> 
     .optional()
 }
 
+pub fn by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<User>> {
+    conn.query_row(
+        &format!("SELECT {COLS} FROM users WHERE id = ?1"),
+        [id],
+        map,
+    )
+    .optional()
+}
+
 pub fn by_api_key(conn: &Connection, key_hash: &str) -> rusqlite::Result<Option<User>> {
     let user = conn
         .query_row(

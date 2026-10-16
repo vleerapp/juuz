@@ -149,10 +149,6 @@ async fn podcast_fetch_refuses_private_hosts_and_needs_role() {
 async fn unsupported_endpoints_fail_cleanly() {
     let h = Harness::new();
     assert_eq!(h.call("hls", "id=x").await["status"], "failed");
-    assert_eq!(
-        h.call("jukeboxControl", "action=get").await["status"],
-        "failed"
-    );
     assert_eq!(h.call("getCaptions", "id=x").await["error"]["code"], 70);
     assert_eq!(h.call("getVideoInfo", "id=x").await["error"]["code"], 70);
     assert_eq!(h.ok("getVideos", "").await["videos"], serde_json::json!({}));

@@ -1,5 +1,6 @@
 pub mod annotation;
 pub mod browse;
+pub mod jukebox;
 pub mod lastfm;
 pub mod lists;
 pub mod media;
@@ -103,6 +104,7 @@ where
         }
     }
 
+    tracing::debug!("{} c={}", parts.uri.path(), params.get("c").unwrap_or("-"));
     let fmt = Format::from_params(&params);
     let user = if authed {
         match auth::authenticate(&st, &params).await {
@@ -277,7 +279,17 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
         ),
         ("search", endpoint(true, search::legacy_search)),
         ("hls", endpoint(true, system::not_supported)),
-        ("jukeboxControl", endpoint(true, system::not_supported)),
+        ("jukeboxControl", endpoint(true, jukebox::control)),
+        (
+            "juuzGetJukeboxOutputs",
+            endpoint(true, jukebox::get_outputs),
+        ),
+        (
+            "juuzScanJukeboxOutputs",
+            endpoint(true, jukebox::scan_outputs),
+        ),
+        ("juuzSetJukeboxOutput", endpoint(true, jukebox::set_output)),
+        ("juuzJukeboxEvents", endpoint(true, jukebox::events)),
         ("getCaptions", endpoint(true, system::not_found)),
         ("getChatMessages", endpoint(true, social::get_chat_messages)),
         ("addChatMessage", endpoint(true, social::add_chat_message)),
@@ -295,13 +307,17 @@ pub fn router(st: AppState) -> Router {
     for path in crate::web::PATHS {
         r = r.route_service(path, web.clone());
     }
-    r.route("/share/{id}", axum::routing::get(social::public_share))
-        .route(
-            "/share/{id}/stream/{song}",
-            axum::routing::get(social::public_share_stream),
-        )
-        .fallback(endpoint(false, system::unknown))
-        .layer(tower_http::cors::CorsLayer::permissive())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(st)
+    r.route(
+        "/jukebox/stream/{id}/{file}",
+        axum::routing::get(jukebox::stream),
+    )
+    .route("/share/{id}", axum::routing::get(social::public_share))
+    .route(
+        "/share/{id}/stream/{song}",
+        axum::routing::get(social::public_share_stream),
+    )
+    .fallback(endpoint(false, system::unknown))
+    .layer(tower_http::cors::CorsLayer::permissive())
+    .layer(tower_http::trace::TraceLayer::new_for_http())
+    .with_state(st)
 }

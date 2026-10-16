@@ -1,3 +1,4 @@
+pub mod settings;
 pub mod users;
 
 use std::path::{Path, PathBuf};

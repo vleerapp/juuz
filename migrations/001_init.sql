@@ -14,7 +14,7 @@ CREATE TABLE users (
     comment_role INTEGER NOT NULL DEFAULT 0,
     podcast_role INTEGER NOT NULL DEFAULT 0,
     share_role INTEGER NOT NULL DEFAULT 0,
-    jukebox_role INTEGER NOT NULL DEFAULT 0,
+    jukebox_role INTEGER NOT NULL DEFAULT 1,
     scrobbling_enabled INTEGER NOT NULL DEFAULT 1,
     max_bit_rate INTEGER NOT NULL DEFAULT 0,
     lastfm_session BLOB,
@@ -211,6 +211,11 @@ CREATE TABLE web_sessions (
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX web_sessions_user ON web_sessions(user_id);
+
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
 CREATE TABLE playlists (
     id TEXT PRIMARY KEY,

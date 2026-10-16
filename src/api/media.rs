@@ -13,6 +13,7 @@ use super::{ApiResult, Ctx, Reply, ok};
 use crate::error::ApiError;
 use crate::lyrics;
 use crate::scanner::tags::read_cover;
+use crate::state::AppState;
 use crate::transcode::Format;
 
 struct SongFile {
@@ -126,9 +127,43 @@ pub async fn serve_file(
     Ok(resp)
 }
 
+pub async fn serve_song(
+    st: &AppState,
+    id: &str,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let id = id.to_string();
+    let song = st.db.run(move |c| song_file(c, &id)).await?;
+    serve_file(headers, &song.path, &song.content_type, None).await
+}
+
 async fn song_for(ctx: &Ctx) -> Result<SongFile, ApiError> {
     let id = ctx.params.req("id")?.to_string();
     ctx.st.db.run(move |c| song_file(c, &id)).await
+}
+
+fn note_streaming(ctx: &Ctx, song: &SongFile) {
+    let user = ctx.user();
+    let player = ctx.params.get("c").unwrap_or("unknown").to_string();
+    let mut map = ctx.st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
+    let key = (user.id.clone(), player.clone());
+    if map.get(&key).is_some_and(|n| n.song_id == song.id) {
+        return;
+    }
+    let started = crate::db::now();
+    map.insert(
+        key,
+        crate::state::NowPlaying {
+            user_id: user.id.clone(),
+            song_id: song.id.clone(),
+            username: user.name.clone(),
+            player,
+            started,
+            until: started + (song.duration_ms / 1000).max(30) + 15,
+        },
+    );
+    drop(map);
+    ctx.st.live.notify();
 }
 
 pub async fn stream(ctx: Ctx) -> ApiResult {
@@ -137,6 +172,7 @@ pub async fn stream(ctx: Ctx) -> ApiResult {
         return Err(ApiError::forbidden("user is not authorized for streaming"));
     }
     let song = song_for(&ctx).await?;
+    note_streaming(&ctx, &song);
     let wanted = ctx
         .params
         .get("format")

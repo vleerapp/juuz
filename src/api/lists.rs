@@ -176,31 +176,33 @@ pub async fn get_songs_by_genre(ctx: Ctx) -> ApiResult {
 }
 
 pub async fn get_now_playing(ctx: Ctx) -> ApiResult {
-    let entries: Vec<_> = {
-        let mut map = ctx.st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
-        let cutoff = now() - 600;
-        map.retain(|_, v| v.started > cutoff);
-        map.values().cloned().collect()
-    };
+    let entries = ctx.st.playing_now();
     let uid = ctx.user().id.clone();
     let list = ctx
         .st
         .db
         .run(move |c| {
-            let ids: Vec<String> = entries.iter().map(|e| e.song_id.clone()).collect();
+            let mut ids: Vec<String> = entries.iter().map(|e| e.song_id.clone()).collect();
+            ids.sort();
+            ids.dedup();
             let rows = songs_by_ids(c, &uid, &ids)?;
             let json_rows = songs_json(c, &rows)?;
-            let mut out = Vec::new();
-            for (row, mut child) in rows.iter().zip(json_rows) {
-                if let Some(e) = entries.iter().find(|e| e.song_id == row.id) {
+            let by_id: std::collections::HashMap<String, serde_json::Value> = rows
+                .iter()
+                .zip(json_rows)
+                .map(|(row, child)| (row.id.clone(), child))
+                .collect();
+            Ok(entries
+                .iter()
+                .filter_map(|e| {
+                    let mut child = by_id.get(&e.song_id)?.clone();
                     child["username"] = json!(e.username);
                     child["minutesAgo"] = json!((now() - e.started) / 60);
                     child["playerName"] = json!(e.player);
                     child["playerId"] = json!(e.player);
-                }
-                out.push(child);
-            }
-            Ok(out)
+                    Some(child)
+                })
+                .collect::<Vec<_>>())
         })
         .await?;
     ok(json!({"nowPlaying": {"entry": list}}))

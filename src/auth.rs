@@ -51,6 +51,14 @@ impl Crypto {
         out
     }
 
+    pub fn sign(&self, data: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.key);
+        hasher.update(b"juuz-sign");
+        hasher.update(data.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
     pub fn open(&self, data: &[u8]) -> Option<Vec<u8>> {
         if data.len() < 13 {
             return None;
@@ -108,7 +116,7 @@ pub fn token_for(password: &str, salt: &str) -> String {
     hex::encode(h.finalize())
 }
 
-fn constant_eq(a: &str, b: &str) -> bool {
+pub fn constant_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
