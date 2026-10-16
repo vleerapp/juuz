@@ -463,6 +463,7 @@ a {
   span {
     color: var(--muted);
     font-size: var(--size-small);
+    text-wrap: nowrap;
   }
 
   @media (max-width: 720px) {
@@ -599,7 +600,7 @@ a {
 .roles {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 24px;
+  gap: 16px 24px;
 }
 
 @media (prefers-reduced-motion: no-preference) {
