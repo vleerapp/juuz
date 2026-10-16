@@ -7,7 +7,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 </div>
 <br>
 
-<img width="1920" height="1080" alt="screenshot" src="https://github.com/user-attachments/assets/a2c2aa92-d5fe-4603-989f-198c79c5b1cb" />
+<img width="2545" height="1387" alt="Screenshot 2026-10-16 at 20-21-27 juuz" src="https://github.com/user-attachments/assets/aebfb85d-1e8a-471e-bcde-0530f4db4c92" />
 
 ## Features
 
