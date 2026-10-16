@@ -15,6 +15,7 @@ use topcoat::session::{
 };
 
 use crate::state::AppState;
+use auth::https;
 
 const COOKIE: &str = "juuz_session";
 const LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
@@ -42,6 +43,7 @@ impl TokenStore for CookieStore {
                 Cookie::build((COOKIE, token.encode()))
                     .path("/")
                     .http_only(true)
+                    .secure(https(cx))
                     .same_site(SameSite::Lax)
                     .max_age(max_age)
                     .build(),
@@ -52,7 +54,12 @@ impl TokenStore for CookieStore {
 
     fn delete<'a>(&'a self, cx: &'a topcoat::context::Cx) -> TokenStoreFuture<'a, ()> {
         Box::pin(async move {
-            cookies(cx).remove(Cookie::build((COOKIE, "")).path("/").build());
+            cookies(cx).remove(
+                Cookie::build((COOKIE, ""))
+                    .path("/")
+                    .secure(https(cx))
+                    .build(),
+            );
             Ok(())
         })
     }

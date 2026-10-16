@@ -19,6 +19,20 @@ pub fn state(cx: &Cx) -> &AppState {
     app_context::<AppState>(cx)
 }
 
+pub fn https(cx: &Cx) -> bool {
+    let headers = topcoat::router::request::headers(cx);
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim);
+    let forwarded = headers
+        .get("forwarded")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("proto=https"));
+    scheme.is_some_and(|s| s.eq_ignore_ascii_case("https")) || forwarded
+}
+
 pub fn fail(e: ApiError) -> topcoat::Error {
     e.into()
 }

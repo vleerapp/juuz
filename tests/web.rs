@@ -663,3 +663,32 @@ async fn username_can_be_changed_from_the_profile() {
     assert_eq!(old.json()["status"], "failed");
     login(&h, "boss", PASS).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cookies_are_secure_behind_https() {
+    let h = Harness::new();
+    let body = format!("username={USER}&password={PASS}");
+    let attrs = |r: &Raw| {
+        r.headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|v| v.starts_with("juuz_session="))
+            .unwrap()
+            .to_ascii_lowercase()
+    };
+
+    let plain = post(&h, "/login", None, &body).await;
+    assert!(!attrs(&plain).contains("secure"));
+    assert!(attrs(&plain).contains("httponly"));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header("x-forwarded-proto", "https")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let proxied = h.raw(req).await;
+    assert!(attrs(&proxied).contains("secure"));
+}

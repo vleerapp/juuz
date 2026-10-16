@@ -7,7 +7,7 @@ use topcoat::router::content::Form;
 use topcoat::router::error::{SeeOther, see_other};
 use topcoat::router::{query_params, request, route};
 
-use super::auth::{fail, require, require_admin, state, token};
+use super::auth::{fail, https, require, require_admin, state, token};
 use super::notice::{Notice, back};
 use crate::auth::{self, verify_password};
 use crate::db::users::{self, RoleUpdate};
@@ -143,6 +143,7 @@ async fn lastfm_start(cx: &Cx) -> Result<SeeOther> {
         Cookie::build((LASTFM_COOKIE, nonce.clone()))
             .path(LASTFM_PATH)
             .http_only(true)
+            .secure(https(cx))
             .same_site(SameSite::Lax)
             .max_age(topcoat::cookie::time::Duration::minutes(10))
             .build(),
@@ -164,7 +165,12 @@ async fn lastfm_callback(cx: &Cx) -> Result<SeeOther> {
     let query = query_params::<LastfmCallback>(cx)?;
     let jar = cookies(cx);
     let expected = jar.get(LASTFM_COOKIE).map(|c| c.value().to_string());
-    jar.remove(Cookie::build((LASTFM_COOKIE, "")).path(LASTFM_PATH).build());
+    jar.remove(
+        Cookie::build((LASTFM_COOKIE, ""))
+            .path(LASTFM_PATH)
+            .secure(https(cx))
+            .build(),
+    );
     let (Some(client), Some(expected), Some(given), Some(token)) = (
         st.lastfm.clone(),
         expected,
