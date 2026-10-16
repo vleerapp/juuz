@@ -2,7 +2,7 @@
   const root = document.documentElement;
   const TEXT = "input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea";
   const FOCUSABLE =
-    "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), summary";
+    "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), summary, [data-copy]";
   const MAX_COLS = 160;
   const probe = document.createElement("div");
   probe.style.cssText = "position:fixed;left:0;top:0;width:var(--ch);height:1px;visibility:hidden";
@@ -28,11 +28,39 @@
 
   const focusables = () =>
     [...document.querySelectorAll(FOCUSABLE)].filter((el) => {
+      const folded = el.closest("details:not([open])");
+      if (folded && el !== folded.firstElementChild) return false;
       const box = el.getBoundingClientRect();
       return box.width > 0 || box.height > 0;
     });
 
+  const copy = async (el) => {
+    const text = el.textContent.trim();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand("copy");
+      selection.removeAllRanges();
+    }
+    el.dataset.copied = "";
+    setTimeout(() => delete el.dataset.copied, 1500);
+  };
+
   const typing = (el) => !!el && el.matches(TEXT);
+
+  const columnOf = (el) => {
+    const holder = el.closest("main > section, main > .live > section, main > nav");
+    if (!holder) return 0;
+    const n = Number(root.dataset.n) || 1;
+    const base = document.querySelector(".screen").getBoundingClientRect().left;
+    const pitch = (Number(root.style.getPropertyValue("--w")) + 4) * cw;
+    return Math.min(n - 1, Math.max(0, Math.round((holder.getBoundingClientRect().left - base) / pitch)));
+  };
 
   let trail = [];
   let goalX = null;
@@ -74,22 +102,37 @@
     const half = rowHeight() / 2;
     const from = el.getBoundingClientRect();
     const x = goalX ?? from.left;
+    const col = columnOf(el);
     let best = null;
     let bestScore = Infinity;
+    const consider = (cand, score) => {
+      if (score < bestScore) {
+        best = cand;
+        bestScore = score;
+      }
+    };
     for (const cand of list) {
       if (cand === el) continue;
       const to = cand.getBoundingClientRect();
       const dy = to.top - from.top;
       const dx = to.left - from.left;
-      let score;
-      if (dir === "down" && dy > half) score = dy * 1e4 + Math.abs(to.left - x);
-      else if (dir === "up" && dy < -half) score = -dy * 1e4 + Math.abs(to.left - x);
-      else if (dir === "right" && Math.abs(dy) < half && dx > 1) score = dx;
-      else if (dir === "left" && Math.abs(dy) < half && dx < -1) score = -dx;
-      else continue;
-      if (score < bestScore) {
-        best = cand;
-        bestScore = score;
+      if (dir === "down" && dy > half && columnOf(cand) === col) consider(cand, dy * 1e4 + Math.abs(to.left - x));
+      else if (dir === "up" && dy < -half && columnOf(cand) === col) consider(cand, -dy * 1e4 + Math.abs(to.left - x));
+      else if (dir === "right" && Math.abs(dy) < half && dx > 1) consider(cand, dx);
+      else if (dir === "left" && Math.abs(dy) < half && dx < -1) consider(cand, -dx);
+    }
+    if (!best && vertical) {
+      const other = list.filter((cand) => (dir === "down" ? columnOf(cand) > col : columnOf(cand) < col));
+      if (other.length) {
+        const target = dir === "down"
+          ? Math.min(...other.map(columnOf))
+          : Math.max(...other.map(columnOf));
+        for (const cand of other) {
+          if (columnOf(cand) !== target) continue;
+          const to = cand.getBoundingClientRect();
+          const row = dir === "down" ? to.top : -to.top;
+          consider(cand, row * 1e4 + Math.abs(to.left - x));
+        }
       }
     }
     if (!best) return;
@@ -137,6 +180,11 @@
       return;
     }
     if (text) return;
+    if ((e.key === "Enter" || e.key === "c") && el && el.matches("[data-copy]")) {
+      e.preventDefault();
+      copy(el);
+      return;
+    }
     if (e.key === "Enter" && el && el.type === "checkbox") {
       e.preventDefault();
       el.click();
@@ -191,7 +239,7 @@
     const x = box.left + pad + index * cw - el.scrollLeft;
     caret.hidden = x + cw > box.right + 1;
     caret.style.left = `${x - base.left}px`;
-    caret.style.top = `${box.top - base.top + (box.height - rowHeight()) / 2}px`;
+    caret.style.top = `${box.top - base.top + (box.height - rowHeight()) / 2 + 1}px`;
     caret.style.animation = "none";
     void caret.offsetWidth;
     caret.style.animation = "";
@@ -217,13 +265,11 @@
           hidden: hiddenValues(el.form),
         };
 
-  document.addEventListener("focusin", (e) => {
+  document.addEventListener("click", (e) => {
+    const target = e.target.closest?.("a[href], button");
+    if (!target || e.detail !== 0) return;
     try {
-      if (e.target.matches("a[href], button")) {
-        sessionStorage.setItem(KEY, JSON.stringify({ ...describe(e.target), at: Date.now() }));
-      } else {
-        sessionStorage.removeItem(KEY);
-      }
+      sessionStorage.setItem(KEY, JSON.stringify({ ...describe(target), at: Date.now() }));
     } catch {}
   });
 
@@ -233,7 +279,7 @@
       saved = JSON.parse(sessionStorage.getItem(KEY));
       sessionStorage.removeItem(KEY);
     } catch {}
-    if (!saved || Date.now() - saved.at > 4000) return;
+    if (!saved || Date.now() - saved.at > 4000 || document.activeElement !== document.body) return;
     const match = focusables().find((el) => {
       if (saved.href !== undefined) {
         return (
@@ -257,5 +303,7 @@
   new ResizeObserver(measure).observe(root);
 
   document.fonts?.addEventListener("loadingdone", measure);
-  restore();
+  const reveal = document.querySelector("[data-copy]");
+  if (reveal) focusTo(reveal);
+  else restore();
 })();

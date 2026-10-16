@@ -29,7 +29,7 @@ html {
   background: var(--bg);
   color: var(--text);
   font: 1rem "Departure Mono";
-  line-height: 1.25rem;
+  line-height: 1.4rem;
   font-variant-ligatures: none;
   font-kerning: none;
   scrollbar-gutter: stable both-edges;
@@ -246,7 +246,7 @@ input:not([type="checkbox"]):focus {
   background: var(--tint-strong);
 }
 
-:is(a, button, summary, input[type="checkbox"]):focus-visible {
+:is(a, button, summary, code, input[type="checkbox"]):focus-visible {
   background: var(--text) !important;
   color: var(--bg) !important;
   filter: none !important;
@@ -352,6 +352,10 @@ ol li::before {
   overflow-wrap: anywhere;
 }
 
+code[data-copied]::after {
+  content: " (copied)";
+}
+
 code {
   display: block;
   background: var(--tint);
@@ -405,7 +409,8 @@ summary small {
   position: absolute;
   z-index: 10;
   width: var(--ch);
-  height: 1rlh;
+  top: 1px;
+  height: calc(1rlh - 2px);
   background: var(--text);
   mix-blend-mode: difference;
   pointer-events: none;

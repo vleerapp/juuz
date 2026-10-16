@@ -735,7 +735,7 @@ async fn keys_view(board: KeysBoard, notice: Option<Notice>) -> Result<impl View
                                 match &board.reveal {
                     Reveal::Key { name, key } => <div class="reveal">
                         <p class="lbl">"new key: " (name.as_str()) " (shown once, copy it now)"</p>
-                        <code class="secret">(key.as_str())</code>
+                        <code data-copy="" tabindex="0" class="secret">(key.as_str())</code>
                     </div>,
                     Reveal::None => "",
                 }
