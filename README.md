@@ -7,6 +7,8 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 </div>
 <br>
 
+<img width="1920" height="1080" alt="screenshot" src="https://github.com/user-attachments/assets/a2c2aa92-d5fe-4603-989f-198c79c5b1cb" />
+
 ## Features
 
 - **[Song upload](#song-upload)**: apps can save downloaded music straight to the server instead of the device, with covers, lyrics and tag fixing included
