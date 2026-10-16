@@ -69,6 +69,7 @@ async fn anonymous_gets_login_and_rest_stays_subsonic() {
     let html = home.text();
     assert!(html.contains("sign in"));
     assert!(!html.contains("api keys"));
+    assert!(html.contains("juuz.css?v="));
 
     let css = page(&h, "/juuz.css", None).await;
     assert_eq!(css.status, StatusCode::OK);
@@ -79,20 +80,9 @@ async fn anonymous_gets_login_and_rest_stays_subsonic() {
             .starts_with("text/css")
     );
 
-    let paper = page(&h, "/paper.webp", None).await;
-    assert_eq!(paper.status, StatusCode::OK);
-    assert_eq!(paper.headers[header::CONTENT_TYPE], "image/webp");
-    assert!(paper.headers.contains_key(header::CACHE_CONTROL));
-    assert!(paper.body.starts_with(b"RIFF"));
-    assert!(paper.body.len() < 512 * 1024);
-
-    let again = page(&h, "/juuz.css", None).await;
-    let (first, second) = (css.text(), again.text());
-    assert!(first.contains("--box-text-3: url("));
-    assert!(first.contains("--rule-5: url("));
-    assert!(first.contains("--hatch-5: url("));
-    assert!(first.contains("clip-path: var(--bar)"));
-    assert_ne!(first, second);
+    let (first, again) = (css.text(), page(&h, "/juuz.css", None).await.text());
+    assert!(first.contains("caret-shape"));
+    assert_eq!(first, again);
     assert!(
         css.headers[header::CACHE_CONTROL]
             .to_str()
@@ -100,10 +90,15 @@ async fn anonymous_gets_login_and_rest_stays_subsonic() {
             .starts_with("private")
     );
 
-    let font = page(&h, "/dareo.otf", None).await;
+    let font = page(&h, "/departure-mono.woff2", None).await;
     assert_eq!(font.status, StatusCode::OK);
-    assert_eq!(font.headers[header::CONTENT_TYPE], "font/otf");
-    assert!(font.body.starts_with(b"OTTO"));
+    assert_eq!(font.headers[header::CONTENT_TYPE], "font/woff2");
+    assert!(font.headers.contains_key(header::CACHE_CONTROL));
+    assert!(font.body.starts_with(b"wOF2"));
+
+    let term = page(&h, "/term.js", None).await;
+    assert_eq!(term.status, StatusCode::OK);
+    assert!(term.text().contains("caret-shape"));
 
     let missing = page(&h, "/rest/doesNotExist?f=json", None).await;
     assert_eq!(missing.json()["status"], "failed");
@@ -137,15 +132,41 @@ async fn login_dashboard_logout() {
     let session = login(&h, USER, PASS).await;
     let dash = page(&h, "/", Some(&session)).await.text();
     assert!(dash.contains("sign out"));
-    assert!(dash.contains("api keys"));
     assert!(dash.contains("admin"));
     assert!(!dash.contains("sign in"));
+    let keys = page(&h, "/account/keys", Some(&session)).await.text();
+    assert!(keys.contains("api keys"));
 
     let out = post(&h, "/logout", Some(&session), "").await;
     assert_eq!(out.status, StatusCode::SEE_OTHER);
     let after = page(&h, "/", Some(&session)).await.text();
     assert!(after.contains("sign in"));
     assert!(!after.contains("sign out"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_page_renders_html_not_subsonic_json() {
+    let h = Harness::new();
+    let session = login(&h, USER, PASS).await;
+    for uri in ["/", "/account", "/account/keys", "/admin", "/admin/server"] {
+        let r = page(&h, uri, Some(&session)).await;
+        assert_eq!(r.status, StatusCode::OK, "{uri}");
+        assert!(
+            r.headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html"),
+            "{uri}"
+        );
+        let html = r.text();
+        assert!(html.contains("class=\"tabs\""), "{uri}");
+        assert!(html.contains("sign out"), "{uri}");
+    }
+    for uri in ["/account", "/account/keys", "/admin", "/admin/server"] {
+        let r = page(&h, uri, None).await;
+        assert_eq!(r.status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(location(&r), "/", "{uri}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -161,7 +182,7 @@ async fn password_change_keeps_token_auth_and_drops_other_sessions() {
         "current=bad&new=fresh&confirm=fresh",
     )
     .await;
-    assert_eq!(location(&wrong), "/?n=password-wrong");
+    assert_eq!(location(&wrong), "/account?n=password-wrong");
     let mismatch = post(
         &h,
         "/account/password",
@@ -169,7 +190,7 @@ async fn password_change_keeps_token_auth_and_drops_other_sessions() {
         &format!("current={PASS}&new=fresh&confirm=other"),
     )
     .await;
-    assert_eq!(location(&mismatch), "/?n=password-mismatch");
+    assert_eq!(location(&mismatch), "/account?n=password-mismatch");
 
     let done = post(
         &h,
@@ -178,7 +199,7 @@ async fn password_change_keeps_token_auth_and_drops_other_sessions() {
         &format!("current={PASS}&new=fresh&confirm=fresh"),
     )
     .await;
-    assert_eq!(location(&done), "/?n=password-changed");
+    assert_eq!(location(&done), "/account?n=password-changed");
 
     let salt = "abc123";
     let token = md5_token("fresh", salt);
@@ -213,10 +234,16 @@ async fn admin_actions_are_gated() {
     h.ok("createUser", "username=bob&password=bobpw").await;
     let bob = login(&h, "bob", "bobpw").await;
 
-    let dash = page(&h, "/", Some(&bob)).await.text();
+    let dash = page(&h, "/account/keys", Some(&bob)).await.text();
     assert!(dash.contains("api keys"));
     assert!(!dash.contains("new user"));
     assert!(!dash.contains("library scan"));
+    assert!(!dash.contains("href=\"/admin\""));
+    for uri in ["/admin", "/admin/server"] {
+        let r = page(&h, uri, Some(&bob)).await;
+        assert_eq!(r.status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(location(&r), "/?n=forbidden", "{uri}");
+    }
 
     for (uri, body) in [
         ("/admin/users/create", "username=eve&password=x"),
@@ -244,7 +271,7 @@ async fn admin_manages_users_without_locking_self_out() {
         "username=carol&password=carolpw",
     )
     .await;
-    assert_eq!(location(&made), "/?n=user-created");
+    assert_eq!(location(&made), "/admin?n=user-created");
     let dup = post(
         &h,
         "/admin/users/create",
@@ -252,7 +279,7 @@ async fn admin_manages_users_without_locking_self_out() {
         "username=Carol&password=x",
     )
     .await;
-    assert_eq!(location(&dup), "/?n=user-exists");
+    assert_eq!(location(&dup), "/admin?n=user-exists");
 
     let carol = login(&h, "carol", "carolpw").await;
     let salt = "s4lt";
@@ -269,7 +296,7 @@ async fn admin_manages_users_without_locking_self_out() {
         "username=carol&password=newpw&stream=on&upload=on",
     )
     .await;
-    assert_eq!(location(&reset), "/?n=user-updated");
+    assert_eq!(location(&reset), "/admin?n=user-updated");
     assert!(page(&h, "/", Some(&carol)).await.text().contains("sign in"));
     let token = md5_token("newpw", salt);
     let ping = h
@@ -281,9 +308,9 @@ async fn admin_manages_users_without_locking_self_out() {
     assert_eq!(info["user"]["adminRole"], false);
 
     let demote = post(&h, "/admin/users/update", Some(&admin), "username=admin").await;
-    assert_eq!(location(&demote), "/?n=self-protected");
+    assert_eq!(location(&demote), "/admin?n=self-protected");
     let suicide = post(&h, "/admin/users/delete", Some(&admin), "username=admin").await;
-    assert_eq!(location(&suicide), "/?n=self-protected");
+    assert_eq!(location(&suicide), "/admin?n=self-protected");
     assert!(
         page(&h, "/", Some(&admin))
             .await
@@ -292,7 +319,7 @@ async fn admin_manages_users_without_locking_self_out() {
     );
 
     let gone = post(&h, "/admin/users/delete", Some(&admin), "username=carol").await;
-    assert_eq!(location(&gone), "/?n=user-deleted");
+    assert_eq!(location(&gone), "/admin?n=user-deleted");
     let users = h.ok("getUsers", "").await;
     assert_eq!(users["users"]["user"].as_array().unwrap().len(), 1);
 }
@@ -309,7 +336,7 @@ async fn profile_and_api_keys() {
         &format!("username={USER}&max_bit_rate=192"),
     )
     .await;
-    assert_eq!(location(&saved), "/?n=saved");
+    assert_eq!(location(&saved), "/account?n=saved");
     let me = h.ok("getUser", "").await;
     assert_eq!(me["user"]["maxBitRate"], 192);
     assert_eq!(me["user"]["scrobblingEnabled"], false);
@@ -320,7 +347,7 @@ async fn profile_and_api_keys() {
         &format!("username={USER}&max_bit_rate=fast"),
     )
     .await;
-    assert_eq!(location(&bad), "/?n=invalid");
+    assert_eq!(location(&bad), "/account?n=invalid");
 
     let created = post(&h, "/account/apikeys", Some(&session), "name=laptop").await;
     assert_eq!(created.status, StatusCode::OK);
@@ -334,7 +361,7 @@ async fn profile_and_api_keys() {
     let via_key = h.get(&format!("/rest/ping?apiKey={key}&f=json")).await;
     assert_eq!(via_key.json()["status"], "ok");
 
-    let listed = page(&h, "/", Some(&session)).await.text();
+    let listed = page(&h, "/account/keys", Some(&session)).await.text();
     assert!(listed.contains("laptop"));
     assert!(!listed.contains(&key));
 
@@ -347,7 +374,7 @@ async fn profile_and_api_keys() {
         &format!("id={id}"),
     )
     .await;
-    assert_eq!(location(&removed), "/?n=key-deleted");
+    assert_eq!(location(&removed), "/account/keys?n=key-deleted");
     let dead = h.get(&format!("/rest/ping?apiKey={key}&f=json")).await;
     assert_eq!(dead.json()["status"], "failed");
 }
@@ -462,7 +489,7 @@ async fn lastfm_link_uses_callback_with_state() {
     });
     let session = login(&h, USER, PASS).await;
 
-    let dash = page(&h, "/", Some(&session)).await.text();
+    let dash = page(&h, "/account", Some(&session)).await.text();
     assert!(dash.contains("/account/lastfm/start"));
 
     let req = Request::builder()
@@ -500,14 +527,14 @@ async fn lastfm_link_uses_callback_with_state() {
         Some(&cookies),
     )
     .await;
-    assert_eq!(location(&forged), "/?n=lastfm-failed");
+    assert_eq!(location(&forged), "/account?n=lastfm-failed");
     let stateless = page(
         &h,
         &format!("/account/lastfm/callback?token=abc&state={state}"),
         Some(&session),
     )
     .await;
-    assert_eq!(location(&stateless), "/?n=lastfm-failed");
+    assert_eq!(location(&stateless), "/account?n=lastfm-failed");
     let anon = page(&h, "/account/lastfm/callback?token=abc&state=x", None).await;
     assert_eq!(location(&anon), "/");
 }
@@ -531,7 +558,8 @@ async fn live_script_and_events_need_a_session() {
     let dash = dash_response.text();
     assert!(dash.contains("src=\"/live.js\""));
     assert!(dash.contains("data-live=\"stats\""));
-    assert!(dash.contains("data-live=\"scan\""));
+    let server = page(&h, "/admin/server", Some(&session)).await.text();
+    assert!(server.contains("data-live=\"scan\""));
 }
 
 async fn connect(
@@ -606,10 +634,9 @@ async fn chart_days_follow_the_browser_timezone() {
         let cookies = format!("{session}; juuz_tz={offset}");
         let html = page(&h, "/", Some(&cookies)).await.text();
         let from = html.find("class=\"chart\"").unwrap();
-        let to = html[from..].find("class=\"cols\"").unwrap() + from;
-        let chart = &html[from..to];
-        let at = chart.rfind("<span>").unwrap();
-        chart[at + 6..].split('<').next().unwrap().to_string()
+        let chart = &html[from..];
+        let at = chart.rfind("class=\"d\">").unwrap();
+        chart[at + 9..].split('<').next().unwrap().to_string()
     };
     let east = last_label("840").await;
     let west = last_label("-840").await;
@@ -632,7 +659,7 @@ async fn username_can_be_changed_from_the_profile() {
         "username=Bob&max_bit_rate=0",
     )
     .await;
-    assert_eq!(location(&taken), "/?n=user-exists");
+    assert_eq!(location(&taken), "/account?n=user-exists");
     let empty = post(
         &h,
         "/account/profile",
@@ -640,7 +667,7 @@ async fn username_can_be_changed_from_the_profile() {
         "username=%20&max_bit_rate=0",
     )
     .await;
-    assert_eq!(location(&empty), "/?n=invalid");
+    assert_eq!(location(&empty), "/account?n=invalid");
 
     let renamed = post(
         &h,
@@ -649,8 +676,8 @@ async fn username_can_be_changed_from_the_profile() {
         "username=boss&max_bit_rate=0&scrobbling=on",
     )
     .await;
-    assert_eq!(location(&renamed), "/?n=saved");
-    let dash = page(&h, "/", Some(&session)).await.text();
+    assert_eq!(location(&renamed), "/account?n=saved");
+    let dash = page(&h, "/account", Some(&session)).await.text();
     assert!(dash.contains("value=\"boss\""));
     assert!(dash.contains("boss"));
 

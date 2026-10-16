@@ -8,6 +8,7 @@ use topcoat::router::error::{SeeOther, see_other};
 use topcoat::router::route;
 use topcoat::session;
 
+use super::nav::Page;
 use super::notice::{Notice, back};
 use crate::auth::verify_password;
 use crate::db::now;
@@ -61,7 +62,7 @@ pub async fn require_admin(cx: &Cx) -> Result<User> {
     if user.admin {
         Ok(user)
     } else {
-        Err(back(Notice::Forbidden).into())
+        Err(back(Page::Stats, Notice::Forbidden).into())
     }
 }
 
@@ -88,14 +89,14 @@ async fn login(cx: &Cx, Form(form): Form<LoginForm>) -> Result<SeeOther> {
         .await
         .map_err(fail)?;
     let Some(user) = user else {
-        return Ok(back(Notice::LoginFailed));
+        return Ok(back(Page::Stats, Notice::LoginFailed));
     };
     let (hash, password) = (user.password_hash.clone(), form.password);
     let valid = tokio::task::spawn_blocking(move || verify_password(&hash, &password))
         .await
         .unwrap_or(false);
     if !valid {
-        return Ok(back(Notice::LoginFailed));
+        return Ok(back(Page::Stats, Notice::LoginFailed));
     }
     let started = session::start(cx).await?;
     let expires = started

@@ -2,9 +2,9 @@ mod actions;
 mod auth;
 mod data;
 mod live;
+mod nav;
 mod notice;
 mod page;
-mod sketch;
 
 use std::time::Duration;
 
@@ -70,9 +70,9 @@ pub const PATHS: [&str; 12] = [
     "/login",
     "/logout",
     "/juuz.css",
-    "/paper.webp",
-    "/dareo.otf",
+    "/departure-mono.woff2",
     "/live.js",
+    "/term.js",
     "/events",
     "/account/{*rest}",
     "/admin/{*rest}",

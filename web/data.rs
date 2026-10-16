@@ -7,7 +7,7 @@ use crate::db::users::{self, User};
 use crate::error::ApiError;
 
 const DAY: i64 = 86_400;
-const CHART_DAYS: i64 = 14;
+const MAX_MONTHS: i64 = 24;
 const TOP: usize = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl Range {
         Range::EACH
             .into_iter()
             .find(|r| Some(r.code()) == code)
-            .unwrap_or(Range::Month)
+            .unwrap_or(Range::Week)
     }
 
     pub fn code(self) -> &'static str {
@@ -43,6 +43,13 @@ impl Range {
             Range::Month => "30 days",
             Range::Year => "year",
             Range::All => "all time",
+        }
+    }
+
+    pub fn unit(self) -> &'static str {
+        match self {
+            Range::Week | Range::Month => "day",
+            Range::Year | Range::All => "month",
         }
     }
 
@@ -160,9 +167,22 @@ fn library(c: &Connection) -> rusqlite::Result<Library> {
     })
 }
 
-fn chart(c: &Connection, user: Option<&str>, tz: i64) -> rusqlite::Result<Vec<Day>> {
+fn month_index(days: i64) -> i64 {
+    let (y, m, _) = civil(days);
+    y * 12 + m - 1
+}
+
+fn month_label(index: i64) -> String {
+    format!(
+        "{:04}-{:02}",
+        index.div_euclid(12),
+        index.rem_euclid(12) + 1
+    )
+}
+
+fn daily(c: &Connection, user: Option<&str>, tz: i64, count: i64) -> rusqlite::Result<Vec<Day>> {
     let today = (now() + tz).div_euclid(DAY);
-    let first = today - (CHART_DAYS - 1);
+    let first = today - (count - 1);
     let mut stmt = c.prepare(
         "SELECT (played_at + ?3) / 86400, COUNT(*) FROM scrobbles
          WHERE (?1 IS NULL OR user_id = ?1) AND played_at >= ?2 GROUP BY 1",
@@ -178,6 +198,45 @@ fn chart(c: &Connection, user: Option<&str>, tz: i64) -> rusqlite::Result<Vec<Da
             plays: counts.get(&d).copied().unwrap_or(0),
         })
         .collect())
+}
+
+fn monthly(c: &Connection, user: Option<&str>, tz: i64, count: i64) -> rusqlite::Result<Vec<Day>> {
+    let last = month_index((now() + tz).div_euclid(DAY));
+    let mut stmt = c.prepare(
+        "SELECT strftime('%Y-%m', played_at + ?2, 'unixepoch'), COUNT(*) FROM scrobbles
+         WHERE (?1 IS NULL OR user_id = ?1) AND played_at >= ?3 GROUP BY 1",
+    )?;
+    let since = now() - (count + 1) * 31 * DAY;
+    let counts: HashMap<String, i64> = stmt
+        .query_map(params![user, tz, since], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok((last - (count - 1)..=last)
+        .map(|index| {
+            let label = month_label(index);
+            Day {
+                plays: counts.get(&label).copied().unwrap_or(0),
+                label,
+            }
+        })
+        .collect())
+}
+
+fn chart(c: &Connection, user: Option<&str>, tz: i64, range: Range) -> rusqlite::Result<Vec<Day>> {
+    match range {
+        Range::Week => daily(c, user, tz, 7),
+        Range::Month => daily(c, user, tz, 30),
+        Range::Year => monthly(c, user, tz, 12),
+        Range::All => {
+            let first: Option<i64> = c.query_row(
+                "SELECT MIN(played_at) FROM scrobbles WHERE (?1 IS NULL OR user_id = ?1)",
+                params![user],
+                |r| r.get(0),
+            )?;
+            let this = month_index((now() + tz).div_euclid(DAY));
+            let span = first.map_or(1, |t| this - month_index((t + tz).div_euclid(DAY)) + 1);
+            monthly(c, user, tz, span.clamp(6, MAX_MONTHS))
+        }
+    }
 }
 
 pub fn stats(c: &Connection, user: Option<&str>, range: Range, tz: i64) -> Result<Stats, ApiError> {
@@ -249,7 +308,7 @@ pub fn stats(c: &Connection, user: Option<&str>, range: Range, tz: i64) -> Resul
         albums,
         artists,
         recent,
-        days: chart(c, user, tz)?,
+        days: chart(c, user, tz, range)?,
     })
 }
 

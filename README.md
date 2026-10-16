@@ -22,7 +22,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 - Live SQLite library that watches the music folders
 - Opus, MP3 and AAC transcoding (`format=opus`, `mp3`, `aac`) in pure Rust, no ffmpeg
 - Podcasts, shares, internet radio, play queue, bookmarks
-- **[Web UI](#web-ui)**: one server-rendered page for stats, account settings and user management
+- **[Web UI](#web-ui)**: a keyboard-driven terminal-style interface for stats, account settings and user management
 
 ## Installation
 
@@ -46,20 +46,19 @@ services:
 
 volumes:
   data:
-
 ```
 
 The server runs on port 4533. The music folder must be writable by uid 1000, since uploads are saved there.
 
 ## Web UI
 
-Open `http://<host>:4533` and sign in with any juuz user. There is no player, only:
+Open `http://<host>:4533` and sign in with any juuz user. There is no player. Pages:
 
-- play stats (top songs, albums and artists, recent plays, plays per day), per user or for everyone as admin
-- account settings: email, max bitrate, play recording, password, API keys, Last.fm link
-- admin: users and roles, library scan, read-only view of the server configuration
-
-The page is rendered on the server with [Topcoat](https://github.com/tokio-rs/topcoat) and needs no JavaScript. Sessions last 30 days and are dropped when the password changes. Put it behind HTTPS when exposing it; the session cookie is `HttpOnly` and `SameSite=Lax`.
+- `stats`: play stats (top songs, albums and artists, recent plays, plays per day), per user or for everyone as admin
+- `account`: username, max bitrate, play recording, password, Last.fm link
+- `keys`: API keys
+- `users` (admin): users and roles
+- `server` (admin): library scan and a read-only view of the server configuration
 
 ## Configuration
 
