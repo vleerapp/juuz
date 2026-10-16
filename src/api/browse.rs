@@ -10,40 +10,15 @@ fn articles() -> String {
     IGNORED_ARTICLES.join(" ")
 }
 
-pub async fn get_music_folders(ctx: Ctx) -> ApiResult {
-    let folders = ctx
-        .st
-        .db
-        .run(|c| {
-            let mut stmt = c.prepare("SELECT id, name FROM music_folders ORDER BY id")?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?}))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        })
-        .await?;
-    ok(json!({"musicFolders": {"musicFolder": folders}}))
+pub const FOLDER_IDS: [i64; 1] = [1];
+
+pub async fn get_music_folders(_ctx: Ctx) -> ApiResult {
+    ok(json!({"musicFolders": {"musicFolder": [{"id": FOLDER_IDS[0], "name": "Music"}]}}))
 }
 
-fn indexed_artists(
-    conn: &Connection,
-    uid: &str,
-    folder: Option<i64>,
-) -> Result<Vec<Value>, ApiError> {
-    let (tail, args) = match folder {
-        Some(f) => (
-            "WHERE EXISTS (SELECT 1 FROM album_artists aa JOIN albums al ON al.id = aa.album_id
-                 WHERE aa.artist_id = ar.id AND al.folder_id = ?)",
-            vec![iv(f)],
-        ),
-        None => (
-            "WHERE EXISTS (SELECT 1 FROM album_artists aa WHERE aa.artist_id = ar.id)",
-            vec![],
-        ),
-    };
-    let mut rows = artists_where(conn, uid, tail, args)?;
+fn indexed_artists(conn: &Connection, uid: &str) -> Result<Vec<Value>, ApiError> {
+    let tail = "WHERE EXISTS (SELECT 1 FROM album_artists aa WHERE aa.artist_id = ar.id)";
+    let mut rows = artists_where(conn, uid, tail, vec![])?;
     let arts: Vec<&str> = IGNORED_ARTICLES.to_vec();
     rows.sort_by_cached_key(|a| {
         strip_article(a.sort_name.as_deref().unwrap_or(&a.name), &arts).to_lowercase()
@@ -71,18 +46,12 @@ fn indexed_artists(
 
 pub async fn get_artists(ctx: Ctx) -> ApiResult {
     let uid = ctx.user().id.clone();
-    let folder = ctx.params.int("musicFolderId")?;
-    let index = ctx
-        .st
-        .db
-        .run(move |c| indexed_artists(c, &uid, folder))
-        .await?;
+    let index = ctx.st.db.run(move |c| indexed_artists(c, &uid)).await?;
     ok(json!({"artists": {"ignoredArticles": articles(), "index": index}}))
 }
 
 pub async fn get_indexes(ctx: Ctx) -> ApiResult {
     let uid = ctx.user().id.clone();
-    let folder = ctx.params.int("musicFolderId")?;
     let (index, modified) = ctx
         .st
         .db
@@ -92,10 +61,7 @@ pub async fn get_indexes(ctx: Ctx) -> ApiResult {
                 [],
                 |r| r.get(0),
             )?;
-            Ok((
-                indexed_artists(c, &uid, folder)?,
-                modified.unwrap_or(0) * 1000,
-            ))
+            Ok((indexed_artists(c, &uid)?, modified.unwrap_or(0) * 1000))
         })
         .await?;
     ok(

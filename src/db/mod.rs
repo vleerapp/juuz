@@ -1,11 +1,12 @@
 pub mod users;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
 use rusqlite_migration::{M, Migrations};
 
 use crate::error::ApiError;
@@ -20,8 +21,21 @@ fn migrations() -> Migrations<'static> {
 }
 
 impl Db {
-    pub fn open(path: &Path) -> Result<Db> {
-        let manager = SqliteConnectionManager::file(path).with_init(|c| {
+    pub fn open(path: &Path, music_dir: PathBuf) -> Result<Db> {
+        let manager = SqliteConnectionManager::file(path).with_init(move |c| {
+            let root = music_dir.clone();
+            c.create_scalar_function(
+                "music_rel",
+                1,
+                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+                move |ctx| {
+                    let path = ctx.get::<String>(0)?;
+                    Ok(Path::new(&path)
+                        .strip_prefix(&root)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or(path))
+                },
+            )?;
             c.execute_batch(
                 "PRAGMA journal_mode = WAL;
                  PRAGMA foreign_keys = ON;

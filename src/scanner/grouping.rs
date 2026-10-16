@@ -46,9 +46,8 @@ pub fn dirscope(rel_dir: &str) -> String {
         .join("/")
 }
 
-pub fn album_key(folder_id: i64, rel_dir: &str, t: &TrackInfo) -> AlbumKey {
+pub fn album_key(rel_dir: &str, t: &TrackInfo) -> AlbumKey {
     let scope = dirscope(rel_dir);
-    let folder = folder_id.to_string();
 
     let Some(title) = t.album.as_deref() else {
         let artist = t
@@ -58,7 +57,7 @@ pub fn album_key(folder_id: i64, rel_dir: &str, t: &TrackInfo) -> AlbumKey {
             .map(|a| fold_key(a))
             .unwrap_or_default();
         return AlbumKey {
-            id: ids::album(&["unknown", &folder, &scope, &artist]),
+            id: ids::album(&["unknown", &scope, &artist]),
             tier: 4,
             title: UNKNOWN_ALBUM.to_string(),
         };
@@ -87,7 +86,7 @@ pub fn album_key(folder_id: i64, rel_dir: &str, t: &TrackInfo) -> AlbumKey {
     }
 
     AlbumKey {
-        id: ids::album(&["dir", &folder, &fold_key(title), &scope]),
+        id: ids::album(&["dir", &fold_key(title), &scope]),
         tier: 3,
         title: title.to_string(),
     }
@@ -143,16 +142,16 @@ mod tests {
 
     #[test]
     fn compilation_in_one_dir_is_one_album() {
-        let a = album_key(1, "Mixes/Hits", &track(Some("Hits"), "A"));
-        let b = album_key(1, "Mixes/Hits", &track(Some("Hits"), "B"));
+        let a = album_key("Mixes/Hits", &track(Some("Hits"), "A"));
+        let b = album_key("Mixes/Hits", &track(Some("Hits"), "B"));
         assert_eq!(a.id, b.id);
         assert_eq!(a.tier, 3);
     }
 
     #[test]
     fn same_title_different_dirs_split() {
-        let a = album_key(1, "A/Greatest Hits", &track(Some("Greatest Hits"), "A"));
-        let b = album_key(1, "B/Greatest Hits", &track(Some("Greatest Hits"), "B"));
+        let a = album_key("A/Greatest Hits", &track(Some("Greatest Hits"), "A"));
+        let b = album_key("B/Greatest Hits", &track(Some("Greatest Hits"), "B"));
         assert_ne!(a.id, b.id);
     }
 
@@ -161,9 +160,9 @@ mod tests {
         let mut t = track(Some("X"), "A");
         t.mbid_release = Some("ABC".into());
         t.album_artists = vec!["A".into()];
-        let k = album_key(1, "one", &t);
+        let k = album_key("one", &t);
         t.artists = vec!["B".into()];
-        let k2 = album_key(1, "two", &t);
+        let k2 = album_key("two", &t);
         assert_eq!(k.id, k2.id);
         assert_eq!(k.tier, 1);
     }
@@ -172,16 +171,16 @@ mod tests {
     fn albumartist_tier() {
         let mut t = track(Some("X"), "A");
         t.album_artists = vec!["Main".into()];
-        let k = album_key(1, "one", &t);
+        let k = album_key("one", &t);
         t.artists = vec!["Guest".into()];
-        assert_eq!(k.id, album_key(1, "other", &t).id);
+        assert_eq!(k.id, album_key("other", &t).id);
         assert_eq!(k.tier, 2);
     }
 
     #[test]
     fn untagged_album_is_per_artist() {
-        let a = album_key(1, "", &track(None, "A"));
-        let b = album_key(1, "", &track(None, "B"));
+        let a = album_key("", &track(None, "A"));
+        let b = album_key("", &track(None, "B"));
         assert_ne!(a.id, b.id);
         assert_eq!(a.title, UNKNOWN_ALBUM);
     }

@@ -57,7 +57,7 @@ impl Harness {
         let data = tempfile::tempdir().unwrap();
         let mut cfg = Config {
             data_dir: data.path().to_path_buf(),
-            music_folders: vec![music.path().to_path_buf()],
+            music_dir: music.path().to_path_buf(),
             ..Config::default()
         };
         cfg.scan.on_start = false;

@@ -31,12 +31,6 @@ CREATE TABLE api_keys (
     last_used_at INTEGER
 );
 
-CREATE TABLE music_folders (
-    id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL
-);
-
 CREATE TABLE artists (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -57,7 +51,6 @@ CREATE TABLE albums (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     sort_title TEXT,
-    folder_id INTEGER REFERENCES music_folders(id) ON DELETE SET NULL,
     group_tier INTEGER NOT NULL DEFAULT 3,
     mbid TEXT,
     upc TEXT,
@@ -90,7 +83,6 @@ CREATE INDEX album_artists_artist ON album_artists(artist_id);
 CREATE TABLE songs (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
-    folder_id INTEGER NOT NULL REFERENCES music_folders(id) ON DELETE CASCADE,
     album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     sort_title TEXT,
@@ -133,7 +125,6 @@ CREATE TABLE songs (
 );
 CREATE INDEX songs_album ON songs(album_id);
 CREATE INDEX songs_audio_hash ON songs(audio_hash);
-CREATE INDEX songs_folder ON songs(folder_id);
 CREATE INDEX songs_seen_gen ON songs(seen_gen);
 CREATE INDEX songs_title ON songs(title COLLATE NOCASE);
 CREATE INDEX songs_cover ON songs(cover_hash);

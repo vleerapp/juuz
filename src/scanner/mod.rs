@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
-use rusqlite::Connection;
 use walkdir::WalkDir;
 
 use crate::db::{Db, now, now_ms};
@@ -28,6 +27,7 @@ pub struct Scanner {
     count: Arc<AtomicU64>,
     index_lock: Arc<Mutex<()>>,
     live: Live,
+    root: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -86,10 +86,11 @@ fn walk(root: &Path) -> Vec<Walked> {
 }
 
 impl Scanner {
-    pub fn new(db: Db, live: Live) -> Scanner {
+    pub fn new(db: Db, live: Live, root: PathBuf) -> Scanner {
         Scanner {
             db,
             live,
+            root,
             running: Arc::new(AtomicBool::new(false)),
             count: Arc::new(AtomicU64::new(0)),
             index_lock: Arc::new(Mutex::new(())),
@@ -157,37 +158,28 @@ impl Scanner {
         let generation: i64 =
             conn.query_row("SELECT gen FROM scan_state WHERE id = 1", [], |r| r.get(0))?;
 
-        let folders: Vec<(i64, String)> = {
-            let mut stmt = conn.prepare("SELECT id, path FROM music_folders ORDER BY id")?;
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?
+        let root = self.root.clone();
+        let ctx = FolderCtx {
+            root: root.clone(),
+            generation,
         };
-
         let mut summary = Summary::default();
-        for (folder_id, root) in folders {
-            let root = PathBuf::from(root);
+
+        'index: {
             if !root.is_dir() {
-                tracing::warn!(
-                    "music folder {} is not accessible, skipping",
-                    root.display()
-                );
-                continue;
+                tracing::warn!("music dir {} is not accessible, skipping", root.display());
+                break 'index;
             }
-            let ctx = FolderCtx {
-                id: folder_id,
-                root: root.clone(),
-                generation,
-            };
 
             let files = walk(&root);
-            let known = index::known_files(&conn, folder_id)?;
+            let known = index::known_files(&conn)?;
             if files.is_empty() && !known.is_empty() {
                 tracing::warn!(
                     "no audio files found in {} but {} are indexed; skipping to avoid mass deletion",
                     root.display(),
                     known.len()
                 );
-                continue;
+                break 'index;
             }
 
             let mut unchanged = Vec::new();
@@ -231,7 +223,7 @@ impl Scanner {
                 self.live.notify();
             }
             index::finalize_albums(&mut conn, &albums, &moves)?;
-            summary.pruned += index::prune_folder(&mut conn, folder_id, generation, scan_start)?;
+            summary.pruned += index::prune_stale(&mut conn, generation, scan_start)?;
         }
 
         index::prune_orphans(&mut conn)?;
@@ -243,28 +235,16 @@ impl Scanner {
         Ok(summary)
     }
 
-    fn folder_for(conn: &Connection, path: &Path) -> Result<Option<(i64, PathBuf)>, ApiError> {
-        let mut stmt = conn.prepare("SELECT id, path FROM music_folders")?;
-        let folders: Vec<(i64, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(folders
-            .into_iter()
-            .map(|(id, p)| (id, PathBuf::from(p)))
-            .filter(|(_, root)| path.starts_with(root))
-            .max_by_key(|(_, root)| root.components().count()))
-    }
-
     pub fn index_file(&self, path: &Path) -> Result<String, ApiError> {
         let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db.conn()?;
-        let (folder_id, root) = Self::folder_for(&conn, path)?
-            .ok_or_else(|| ApiError::generic("file is outside every music folder"))?;
+        if !path.starts_with(&self.root) {
+            return Err(ApiError::generic("file is outside the music dir"));
+        }
         let generation: i64 =
             conn.query_row("SELECT gen FROM scan_state WHERE id = 1", [], |r| r.get(0))?;
         let ctx = FolderCtx {
-            id: folder_id,
-            root,
+            root: self.root.clone(),
             generation,
         };
         let track = read_track(path).map_err(|e| {
@@ -281,14 +261,8 @@ impl Scanner {
             .ok_or_else(|| ApiError::generic("file already indexed from another path"))
     }
 
-    pub fn predict_song_id(
-        &self,
-        folder_id: i64,
-        root: &Path,
-        target: &Path,
-        t: &TrackInfo,
-    ) -> String {
-        let key = grouping::album_key(folder_id, &index::rel_dir(root, target), t);
+    pub fn predict_song_id(&self, target: &Path, t: &TrackInfo) -> String {
+        let key = grouping::album_key(&index::rel_dir(&self.root, target), t);
         crate::ids::song(&t.audio_hash, &key.id)
     }
 

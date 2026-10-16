@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 pub struct Config {
     pub listen: String,
     pub data_dir: PathBuf,
-    pub music_folders: Vec<PathBuf>,
+    pub music_dir: PathBuf,
     pub scan: ScanConfig,
     pub upload: UploadConfig,
     pub omm: OmmConfig,
@@ -74,7 +74,7 @@ impl Default for Config {
         Self {
             listen: "0.0.0.0:4533".into(),
             data_dir: PathBuf::from("./data"),
-            music_folders: vec![PathBuf::from("./music")],
+            music_dir: PathBuf::from("./music"),
             scan: ScanConfig::default(),
             upload: UploadConfig::default(),
             omm: OmmConfig::default(),

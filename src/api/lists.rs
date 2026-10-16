@@ -22,11 +22,6 @@ fn album_list_tail(ctx: &Ctx) -> Result<(String, Vec<Sql>), ApiError> {
     let mut wheres: Vec<String> = Vec::new();
     let mut args: Vec<Sql> = Vec::new();
 
-    if let Some(f) = p.int("musicFolderId")? {
-        wheres.push("al.folder_id = ?".into());
-        args.push(iv(f));
-    }
-
     let order = match kind {
         "random" => "RANDOM()".to_string(),
         "newest" => "al.created_at DESC".to_string(),
@@ -139,10 +134,6 @@ pub async fn get_random_songs(ctx: Ctx) -> ApiResult {
         wheres.push("s.year <= ?".into());
         args.push(iv(y));
     }
-    if let Some(f) = p.int("musicFolderId")? {
-        wheres.push("s.folder_id = ?".into());
-        args.push(iv(f));
-    }
     let where_sql = if wheres.is_empty() {
         String::new()
     } else {
@@ -166,15 +157,10 @@ pub async fn get_songs_by_genre(ctx: Ctx) -> ApiResult {
     let genre = p.req("genre")?.to_string();
     let count = p.int_or("count", 10)?.clamp(0, 500);
     let offset = p.int_or("offset", 0)?.max(0);
-    let mut args = vec![sv(&genre)];
-    let mut folder = String::new();
-    if let Some(f) = p.int("musicFolderId")? {
-        folder = " AND s.folder_id = ?".into();
-        args.push(iv(f));
-    }
+    let args = vec![sv(&genre)];
     let tail = format!(
         "WHERE s.id IN (SELECT sg.song_id FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
-            WHERE g.name = ? COLLATE NOCASE){folder}
+            WHERE g.name = ? COLLATE NOCASE)
          ORDER BY s.title COLLATE NOCASE LIMIT {count} OFFSET {offset}"
     );
     let uid = ctx.user().id.clone();
@@ -222,7 +208,6 @@ pub async fn get_now_playing(ctx: Ctx) -> ApiResult {
 
 async fn starred(ctx: Ctx, v2: bool) -> ApiResult {
     let uid = ctx.user().id.clone();
-    let folder = ctx.params.int("musicFolderId")?;
     let (artists, albums, songs) = ctx
         .st
         .db
@@ -233,25 +218,17 @@ async fn starred(ctx: Ctx, v2: bool) -> ApiResult {
                 "WHERE st.starred_at IS NOT NULL ORDER BY st.starred_at DESC",
                 vec![],
             )?;
-            let (extra, args) = match folder {
-                Some(f) => (" AND al.folder_id = ?", vec![iv(f)]),
-                None => ("", vec![]),
-            };
             let albums = albums_where(
                 c,
                 &uid,
-                &format!("WHERE st.starred_at IS NOT NULL{extra} ORDER BY st.starred_at DESC"),
-                args,
+                "WHERE st.starred_at IS NOT NULL ORDER BY st.starred_at DESC",
+                vec![],
             )?;
-            let (extra, args) = match folder {
-                Some(f) => (" AND s.folder_id = ?", vec![iv(f)]),
-                None => ("", vec![]),
-            };
             let songs = songs_where(
                 c,
                 &uid,
-                &format!("WHERE st.starred_at IS NOT NULL{extra} ORDER BY st.starred_at DESC"),
-                args,
+                "WHERE st.starred_at IS NOT NULL ORDER BY st.starred_at DESC",
+                vec![],
             )?;
             let album_json: Vec<Value> = if v2 {
                 albums_json(c, &albums)?

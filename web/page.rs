@@ -77,6 +77,7 @@ fn config_rows(cx: &Cx) -> Vec<(&'static str, String)> {
         ("version", env!("CARGO_PKG_VERSION").to_string()),
         ("listen", cfg.listen.clone()),
         ("data dir", cfg.data_dir.display().to_string()),
+        ("music dir", cfg.music_dir.display().to_string()),
         ("scan on start", onoff(cfg.scan.on_start)),
         ("watch folders", onoff(cfg.scan.watch)),
         ("uploads", onoff(cfg.upload.enabled)),
@@ -672,9 +673,6 @@ async fn control_section(control: &Control, me: &str, tz: i64) -> Result<impl Vi
                 for (label, value) in control.config.iter() {
                     <div><dt>(*label)</dt><dd>(value.as_str())</dd></div>
                 }
-                <div><dt>"music folders"</dt><dd>
-                    for folder in control.data.folders.iter() { <span>(folder.as_str())</span> }
-                </dd></div>
             </dl>
         )
         panel(

@@ -20,7 +20,7 @@ fn hidden_below(root: &Path, path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn handle(scanner: &Scanner, roots: &[PathBuf], result: DebounceEventResult) {
+fn handle(scanner: &Scanner, root: &Path, result: DebounceEventResult) {
     let events = match result {
         Ok(events) => events,
         Err(errors) => {
@@ -37,7 +37,7 @@ fn handle(scanner: &Scanner, roots: &[PathBuf], result: DebounceEventResult) {
             continue;
         }
         for p in &ev.event.paths {
-            if roots.iter().any(|r| hidden_below(r, p)) {
+            if hidden_below(root, p) {
                 continue;
             }
             paths.insert(p.clone());
@@ -63,16 +63,14 @@ pub fn process_paths(scanner: &Scanner, paths: HashSet<PathBuf>) {
     }
 }
 
-pub fn spawn(scanner: Scanner, roots: Vec<PathBuf>) -> Result<Watcher> {
-    let handler_roots = roots.clone();
+pub fn spawn(scanner: Scanner, root: PathBuf) -> Result<Watcher> {
+    let handler_root = root.clone();
     let mut debouncer = new_debouncer(
         Duration::from_secs(2),
         None,
-        move |result: DebounceEventResult| handle(&scanner, &handler_roots, result),
+        move |result: DebounceEventResult| handle(&scanner, &handler_root, result),
     )?;
-    for root in &roots {
-        debouncer.watch(root, RecursiveMode::Recursive)?;
-        tracing::info!("watching {}", root.display());
-    }
+    debouncer.watch(&root, RecursiveMode::Recursive)?;
+    tracing::info!("watching {}", root.display());
     Ok(debouncer)
 }

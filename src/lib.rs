@@ -41,24 +41,6 @@ impl Server {
     }
 }
 
-fn sync_folders(cfg: &Config, db: &Db) -> Result<()> {
-    let conn = db.conn()?;
-    for path in &cfg.music_folders {
-        let abs = std::fs::canonicalize(path)
-            .with_context(|| format!("music folder {} not accessible", path.display()))?;
-        let name = abs
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Music".into());
-        conn.execute(
-            "INSERT OR IGNORE INTO music_folders(path, name) VALUES (?1, ?2)",
-            rusqlite::params![abs.to_string_lossy(), name],
-        )?;
-        tracing::info!("music folder {}", abs.display());
-    }
-    Ok(())
-}
-
 fn bootstrap_admin(cfg: &Config, db: &Db, crypto: &Crypto) -> Result<()> {
     let conn = db.conn()?;
     if db::users::count(&conn)? > 0 {
@@ -82,34 +64,27 @@ fn bootstrap_admin(cfg: &Config, db: &Db, crypto: &Crypto) -> Result<()> {
     Ok(())
 }
 
-pub fn init(cfg: Config) -> Result<Server> {
+pub fn init(mut cfg: Config) -> Result<Server> {
     std::fs::create_dir_all(&cfg.data_dir)
         .with_context(|| format!("creating data dir {}", cfg.data_dir.display()))?;
-    let db = Db::open(&cfg.db_path())?;
-    sync_folders(&cfg, &db)?;
+    cfg.music_dir = std::fs::canonicalize(&cfg.music_dir)
+        .with_context(|| format!("music dir {} not accessible", cfg.music_dir.display()))?;
+    let db = Db::open(&cfg.db_path(), cfg.music_dir.clone())?;
+    tracing::info!("music dir {}", cfg.music_dir.display());
 
     let crypto = Arc::new(Crypto::load_or_create(&cfg.secret_path())?);
     bootstrap_admin(&cfg, &db, &crypto)?;
 
-    clean_stale_uploads(&db);
+    clean_stale_uploads(&cfg.music_dir);
 
     let live = live::Live::new();
-    let scanner = Scanner::new(db.clone(), live.clone());
+    let scanner = Scanner::new(db.clone(), live.clone(), cfg.music_dir.clone());
     if cfg.scan.on_start {
         scanner.start(false);
     }
 
     let watcher = if cfg.scan.watch {
-        let roots: Vec<std::path::PathBuf> = {
-            let conn = db.conn()?;
-            let mut stmt = conn.prepare("SELECT path FROM music_folders")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-                .into_iter()
-                .map(Into::into)
-                .collect()
-        };
-        match scanner::watch::spawn(scanner.clone(), roots) {
+        match scanner::watch::spawn(scanner.clone(), cfg.music_dir.clone()) {
             Ok(w) => Some(w),
             Err(e) => {
                 tracing::warn!("file watcher disabled: {e:#}");
@@ -165,22 +140,13 @@ pub fn init(cfg: Config) -> Result<Server> {
     })
 }
 
-fn clean_stale_uploads(db: &Db) {
-    let Ok(conn) = db.conn() else { return };
-    let Ok(mut stmt) = conn.prepare("SELECT path FROM music_folders") else {
+fn clean_stale_uploads(root: &std::path::Path) {
+    let dir = root.join(".juuz-tmp");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
-    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
-        return;
-    };
-    for root in rows.flatten() {
-        let dir = std::path::Path::new(&root).join(".juuz-tmp");
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let _ = std::fs::remove_file(e.path());
-        }
-        let _ = std::fs::remove_dir(&dir);
+    for e in entries.flatten() {
+        let _ = std::fs::remove_file(e.path());
     }
+    let _ = std::fs::remove_dir(&dir);
 }

@@ -24,7 +24,6 @@ fn ids_for(
     conn: &Connection,
     kind: &str,
     query: &Option<String>,
-    folder: Option<i64>,
     page: &Page,
 ) -> Result<Vec<String>, ApiError> {
     if page.count <= 0 {
@@ -35,19 +34,8 @@ fn ids_for(
         (Some(q), _) => {
             args.push(sv(q));
             args.push(sv(kind));
-            let join = match (kind, folder) {
-                ("song", Some(f)) => {
-                    args.push(iv(f));
-                    "JOIN songs s ON s.id = f.id AND s.folder_id = ?3"
-                }
-                ("album", Some(f)) => {
-                    args.push(iv(f));
-                    "JOIN albums s ON s.id = f.id AND s.folder_id = ?3"
-                }
-                _ => "",
-            };
             format!(
-                "SELECT f.id FROM search_fts f {join} WHERE search_fts MATCH ?1 AND f.kind = ?2
+                "SELECT f.id FROM search_fts f WHERE search_fts MATCH ?1 AND f.kind = ?2
                  ORDER BY f.rank LIMIT {} OFFSET {}",
                 page.count, page.offset
             )
@@ -56,32 +44,14 @@ fn ids_for(
             "SELECT id FROM artists ORDER BY name COLLATE NOCASE LIMIT {} OFFSET {}",
             page.count, page.offset
         ),
-        (None, "album") => {
-            let filter = match folder {
-                Some(f) => {
-                    args.push(iv(f));
-                    "WHERE folder_id = ?"
-                }
-                None => "",
-            };
-            format!(
-                "SELECT id FROM albums {filter} ORDER BY title COLLATE NOCASE LIMIT {} OFFSET {}",
-                page.count, page.offset
-            )
-        }
-        (None, _) => {
-            let filter = match folder {
-                Some(f) => {
-                    args.push(iv(f));
-                    "WHERE folder_id = ?"
-                }
-                None => "",
-            };
-            format!(
-                "SELECT id FROM songs {filter} ORDER BY title COLLATE NOCASE LIMIT {} OFFSET {}",
-                page.count, page.offset
-            )
-        }
+        (None, "album") => format!(
+            "SELECT id FROM albums ORDER BY title COLLATE NOCASE LIMIT {} OFFSET {}",
+            page.count, page.offset
+        ),
+        (None, _) => format!(
+            "SELECT id FROM songs ORDER BY title COLLATE NOCASE LIMIT {} OFFSET {}",
+            page.count, page.offset
+        ),
     };
     let mut stmt = conn.prepare(&sql)?;
     let ids = stmt
@@ -105,7 +75,6 @@ fn page_of(ctx: &Ctx, count_key: &str, offset_key: &str) -> Result<Page, ApiErro
 
 async fn run_search(ctx: &Ctx) -> Result<Results, ApiError> {
     let query = fts_query(ctx.params.get("query").unwrap_or(""));
-    let folder = ctx.params.int("musicFolderId")?;
     let artist_page = page_of(ctx, "artistCount", "artistOffset")?;
     let album_page = page_of(ctx, "albumCount", "albumOffset")?;
     let song_page = page_of(ctx, "songCount", "songOffset")?;
@@ -113,9 +82,9 @@ async fn run_search(ctx: &Ctx) -> Result<Results, ApiError> {
     ctx.st
         .db
         .run(move |c| {
-            let artist_ids = ids_for(c, "artist", &query, folder, &artist_page)?;
-            let album_ids = ids_for(c, "album", &query, folder, &album_page)?;
-            let song_ids = ids_for(c, "song", &query, folder, &song_page)?;
+            let artist_ids = ids_for(c, "artist", &query, &artist_page)?;
+            let album_ids = ids_for(c, "album", &query, &album_page)?;
+            let song_ids = ids_for(c, "song", &query, &song_page)?;
             Ok(Results {
                 artists: artists_by_ids(c, &uid, &artist_ids)?,
                 albums: albums_by_ids(c, &uid, &album_ids)?,
@@ -185,7 +154,7 @@ pub async fn legacy_search(ctx: Ctx) -> ApiResult {
         .db
         .run(move |c| {
             let page = Page { count, offset };
-            let ids = ids_for(c, "song", &fts, None, &page)?;
+            let ids = ids_for(c, "song", &fts, &page)?;
             let rows = songs_by_ids(c, &uid, &ids)?;
             Ok((offset + rows.len() as i64, songs_json(c, &rows)?))
         })

@@ -1,16 +1,11 @@
-use rusqlite::Connection;
 use serde_json::json;
 
+use super::browse::FOLDER_IDS;
 use super::{ApiResult, Ctx, empty, ok};
 use crate::auth;
 use crate::db::users::{self, RoleUpdate, User};
 use crate::error::ApiError;
 use crate::params::Params;
-
-fn folder_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
-    let mut stmt = conn.prepare("SELECT id FROM music_folders ORDER BY id")?;
-    stmt.query_map([], |r| r.get(0))?.collect()
-}
 
 fn roles_from(p: &Params) -> RoleUpdate {
     RoleUpdate {
@@ -52,7 +47,7 @@ pub async fn get_user(ctx: Ctx) -> ApiResult {
         .db
         .run(move |c| {
             let u = users::by_name(c, &target)?.ok_or_else(|| ApiError::not_found("user"))?;
-            Ok(u.to_json(&folder_ids(c)?))
+            Ok(u.to_json(&FOLDER_IDS))
         })
         .await?;
     ok(json!({"user": user}))
@@ -64,10 +59,9 @@ pub async fn get_users(ctx: Ctx) -> ApiResult {
         .st
         .db
         .run(|c| {
-            let folders = folder_ids(c)?;
             Ok(users::list(c)?
                 .iter()
-                .map(|u| u.to_json(&folders))
+                .map(|u| u.to_json(&FOLDER_IDS))
                 .collect::<Vec<_>>())
         })
         .await?;

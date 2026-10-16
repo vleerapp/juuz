@@ -26,11 +26,6 @@ const MAX_TEXT_FIELD: usize = 8192;
 const MAX_TEXT_FIELDS: usize = 64;
 const MULTIPART_OVERHEAD: u64 = 1024 * 1024;
 
-struct Target {
-    folder_id: i64,
-    root: PathBuf,
-}
-
 fn check_role(st: &AppState, user: &User) -> Result<(), ApiError> {
     if !st.cfg.upload.enabled {
         return Err(ApiError::forbidden("uploads are disabled on this server"));
@@ -43,35 +38,6 @@ fn check_role(st: &AppState, user: &User) -> Result<(), ApiError> {
 
 fn bad_upload(message: impl Into<String>) -> ApiError {
     ApiError::generic(message)
-}
-
-async fn pick_folder(st: &AppState, params: &Params) -> Result<Target, ApiError> {
-    let wanted = params.int("musicFolderId")?;
-    st.db
-        .run(move |c| {
-            let row: Option<(i64, String)> = match wanted {
-                Some(id) => c
-                    .query_row(
-                        "SELECT id, path FROM music_folders WHERE id = ?1",
-                        [id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()?,
-                None => c
-                    .query_row(
-                        "SELECT id, path FROM music_folders ORDER BY id LIMIT 1",
-                        [],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()?,
-            };
-            row.map(|(folder_id, p)| Target {
-                folder_id,
-                root: PathBuf::from(p),
-            })
-            .ok_or_else(|| ApiError::not_found("music folder"))
-        })
-        .await
 }
 
 async fn receive(
@@ -356,7 +322,6 @@ async fn process_song(
     st: &AppState,
     user: &User,
     params: &Params,
-    target: &Target,
     work: &mut PathBuf,
     original: Option<String>,
 ) -> Result<(&'static str, String), ApiError> {
@@ -382,13 +347,12 @@ async fn process_song(
     let _guard = st.upload_lock.lock().await;
 
     let relative = target_relative(&meta, ext);
-    let final_path = unique_path(target.root.join(&relative));
-    if !upload::contained(&target.root, &final_path) {
+    let root = &st.cfg.music_dir;
+    let final_path = unique_path(root.join(&relative));
+    if !upload::contained(root, &final_path) {
         return Err(bad_upload("invalid target path"));
     }
-    let predicted = st
-        .scanner
-        .predict_song_id(target.folder_id, &target.root, &final_path, &info);
+    let predicted = st.scanner.predict_song_id(&final_path, &info);
     let existing: Option<String> = {
         let id = predicted.clone();
         st.db
@@ -634,8 +598,7 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
 
         let kind = params.get("kind").unwrap_or("song").to_string();
         let original = field.file_name().map(str::to_string);
-        let target = pick_folder(&st, &params).await?;
-        let tmp_dir = target.root.join(TMP_DIR);
+        let tmp_dir = st.cfg.music_dir.join(TMP_DIR);
         let limit = match kind.as_str() {
             "song" => max,
             "cover" => st.cfg.upload.max_companion_size,
@@ -648,7 +611,7 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
         let result = match kind.as_str() {
             "cover" => process_cover(&st, &params, &mut work).await,
             "lyrics" => process_lyrics(&st, &params, &mut work).await,
-            _ => match process_song(&st, &user, &params, &target, &mut work, original).await {
+            _ => match process_song(&st, &user, &params, &mut work, original).await {
                 Ok((status, id)) => match song_json(&st, &user.id, &id).await {
                     Ok(song) => Ok(json!({"status": status, "song": song})),
                     Err(e) => Err(e),
@@ -709,12 +672,10 @@ pub async fn delete_song(ctx: Ctx) -> ApiResult {
         .run(move |c| {
             let mut out = Vec::new();
             for id in &ids {
-                let row: Option<(String, String)> = c
-                    .query_row(
-                        "SELECT s.path, f.path FROM songs s JOIN music_folders f ON f.id = s.folder_id WHERE s.id = ?1",
-                        params![id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
+                let row: Option<String> = c
+                    .query_row("SELECT path FROM songs WHERE id = ?1", params![id], |r| {
+                        r.get(0)
+                    })
                     .optional()?;
                 out.push(row.ok_or_else(|| ApiError::not_found("song"))?);
             }
@@ -723,7 +684,8 @@ pub async fn delete_song(ctx: Ctx) -> ApiResult {
         .await?;
 
     let _guard = ctx.st.upload_lock.lock().await;
-    for (path, root) in found {
+    let root = ctx.st.cfg.music_dir.clone();
+    for path in found {
         let path = PathBuf::from(path);
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}
@@ -739,7 +701,7 @@ pub async fn delete_song(ctx: Ctx) -> ApiResult {
             .await
             .map_err(|_| ApiError::generic("internal server error"))??;
         if let Some(parent) = path.parent() {
-            let (root, parent) = (PathBuf::from(root), parent.to_path_buf());
+            let (root, parent) = (root.clone(), parent.to_path_buf());
             tokio::task::spawn_blocking(move || prune_dirs(&root, &parent))
                 .await
                 .map_err(|_| ApiError::generic("internal server error"))?;

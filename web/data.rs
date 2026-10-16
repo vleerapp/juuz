@@ -306,7 +306,6 @@ pub struct Member {
 #[derive(Clone)]
 pub struct Admin {
     pub members: Vec<Member>,
-    pub folders: Vec<String>,
 }
 
 pub fn admin(c: &Connection) -> Result<Admin, ApiError> {
@@ -321,9 +320,5 @@ pub fn admin(c: &Connection) -> Result<Admin, ApiError> {
             user,
         })
         .collect();
-    let mut stmt = c.prepare("SELECT path FROM music_folders ORDER BY id")?;
-    let folders = stmt
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(Admin { members, folders })
+    Ok(Admin { members })
 }

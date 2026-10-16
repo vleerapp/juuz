@@ -11,7 +11,6 @@ use crate::error::ApiError;
 use crate::ids;
 
 pub struct FolderCtx {
-    pub id: i64,
     pub root: PathBuf,
     pub generation: i64,
 }
@@ -103,7 +102,7 @@ pub fn upsert_tracks(
     let ts = now();
 
     for t in tracks {
-        let key = album_key(ctx.id, &rel_dir(&ctx.root, &t.path), t);
+        let key = album_key(&rel_dir(&ctx.root, &t.path), t);
         let album_id = key.id.clone();
         let song_id = ids::song(&t.audio_hash, &album_id);
         let path_str = t.path.to_string_lossy().into_owned();
@@ -174,8 +173,8 @@ pub fn upsert_tracks(
 
         let is_va_tag = t.compilation as i64;
         tx.execute(
-            "INSERT INTO albums(id, title, folder_id, group_tier, mbid, upc, label, year, date, original_date, is_compilation, derived_artist, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO albums(id, title, group_tier, mbid, upc, label, year, date, original_date, is_compilation, derived_artist, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 mbid = COALESCE(albums.mbid, excluded.mbid),
                 upc = COALESCE(albums.upc, excluded.upc),
@@ -187,7 +186,6 @@ pub fn upsert_tracks(
             params![
                 album_id,
                 key.title,
-                ctx.id,
                 key.tier,
                 t.mbid_release,
                 t.upc,
@@ -221,16 +219,16 @@ pub fn upsert_tracks(
         let display = artists.join(", ");
 
         tx.execute(
-            "INSERT INTO songs(id, path, folder_id, album_id, title, track, disc, disc_subtitle, year, date, original_date,
+            "INSERT INTO songs(id, path, album_id, title, track, disc, disc_subtitle, year, date, original_date,
                 duration_ms, bitrate, sample_rate, channels, bit_depth, size, mtime, suffix, content_type, audio_hash,
                 mbid, mbid_track, isrc, bpm, comment, composer, lyrics, rg_track_gain, rg_track_peak, rg_album_gain,
                 rg_album_peak, cover_hash, display_artist, seen_gen, indexed_at, created_at)
-             VALUES (:id, :path, :folder, :album, :title, :track, :disc, :disc_subtitle, :year, :date, :original_date,
+             VALUES (:id, :path, :album, :title, :track, :disc, :disc_subtitle, :year, :date, :original_date,
                 :duration, :bitrate, :sample_rate, :channels, :bit_depth, :size, :mtime, :suffix, :content_type, :audio_hash,
                 :mbid, :mbid_track, :isrc, :bpm, :comment, :composer, :lyrics, :rg_tg, :rg_tp, :rg_ag,
                 :rg_ap, :cover, :display, :generation, :now_ms, :now)
              ON CONFLICT(id) DO UPDATE SET
-                path = excluded.path, folder_id = excluded.folder_id, album_id = excluded.album_id,
+                path = excluded.path, album_id = excluded.album_id,
                 title = excluded.title, track = excluded.track, disc = excluded.disc,
                 disc_subtitle = excluded.disc_subtitle, year = excluded.year, date = excluded.date,
                 original_date = excluded.original_date, duration_ms = excluded.duration_ms,
@@ -246,7 +244,6 @@ pub fn upsert_tracks(
             named_params! {
                 ":id": song_id,
                 ":path": path_str,
-                ":folder": ctx.id,
                 ":album": album_id,
                 ":title": t.title,
                 ":track": t.track,
@@ -542,17 +539,15 @@ pub fn prune_user_rows(conn: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub fn prune_folder(
+pub fn prune_stale(
     conn: &mut Connection,
-    folder_id: i64,
     generation: i64,
     scan_start: i64,
 ) -> Result<usize, ApiError> {
     let stale: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM songs WHERE folder_id = ?1 AND seen_gen < ?2 AND indexed_at < ?3",
-        )?;
-        stmt.query_map(params![folder_id, generation, scan_start], |r| r.get(0))?
+        let mut stmt =
+            conn.prepare("SELECT id FROM songs WHERE seen_gen < ?1 AND indexed_at < ?2")?;
+        stmt.query_map(params![generation, scan_start], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
     if stale.is_empty() {
@@ -568,12 +563,9 @@ pub fn prune_folder(
     Ok(stale.len())
 }
 
-pub fn known_files(
-    conn: &Connection,
-    folder_id: i64,
-) -> rusqlite::Result<HashMap<String, (i64, i64, String)>> {
-    let mut stmt = conn.prepare("SELECT path, size, mtime, id FROM songs WHERE folder_id = ?1")?;
-    stmt.query_map([folder_id], |r| {
+pub fn known_files(conn: &Connection) -> rusqlite::Result<HashMap<String, (i64, i64, String)>> {
+    let mut stmt = conn.prepare("SELECT path, size, mtime, id FROM songs")?;
+    stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
     })?
     .collect()

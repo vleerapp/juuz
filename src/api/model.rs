@@ -66,7 +66,6 @@ pub struct SongRow {
     pub suffix: String,
     pub content_type: String,
     pub path: String,
-    pub folder_id: i64,
     pub cover_hash: Option<String>,
     pub album_cover: Option<String>,
     pub display_artist: String,
@@ -88,8 +87,8 @@ pub struct SongRow {
 }
 
 pub const SONG_SELECT: &str = "SELECT s.id, s.title, s.album_id, al.title, s.track, s.disc, s.year,
-    s.duration_ms, s.bitrate, s.sample_rate, s.channels, s.bit_depth, s.size, s.suffix, s.content_type, s.path,
-    s.folder_id, s.cover_hash, al.cover_hash, s.display_artist, s.mbid, s.isrc, s.bpm, s.comment, s.composer,
+    s.duration_ms, s.bitrate, s.sample_rate, s.channels, s.bit_depth, s.size, s.suffix, s.content_type, music_rel(s.path),
+    s.cover_hash, al.cover_hash, s.display_artist, s.mbid, s.isrc, s.bpm, s.comment, s.composer,
     s.rg_track_gain, s.rg_track_peak, s.rg_album_gain, s.rg_album_peak, s.created_at, s.omm_id,
     st.starred_at, rt.rating, ps.play_count, ps.last_played
     FROM songs s JOIN albums al ON al.id = s.album_id
@@ -115,25 +114,24 @@ fn map_song(r: &Row) -> rusqlite::Result<SongRow> {
         suffix: r.get(13)?,
         content_type: r.get(14)?,
         path: r.get(15)?,
-        folder_id: r.get(16)?,
-        cover_hash: r.get(17)?,
-        album_cover: r.get(18)?,
-        display_artist: r.get(19)?,
-        mbid: r.get(20)?,
-        isrc: r.get(21)?,
-        bpm: r.get(22)?,
-        comment: r.get(23)?,
-        composer: r.get(24)?,
-        rg_track_gain: r.get(25)?,
-        rg_track_peak: r.get(26)?,
-        rg_album_gain: r.get(27)?,
-        rg_album_peak: r.get(28)?,
-        created_at: r.get(29)?,
-        omm_id: r.get(30)?,
-        starred_at: r.get(31)?,
-        rating: r.get(32)?,
-        play_count: r.get::<_, Option<i64>>(33)?.unwrap_or(0),
-        last_played: r.get(34)?,
+        cover_hash: r.get(16)?,
+        album_cover: r.get(17)?,
+        display_artist: r.get(18)?,
+        mbid: r.get(19)?,
+        isrc: r.get(20)?,
+        bpm: r.get(21)?,
+        comment: r.get(22)?,
+        composer: r.get(23)?,
+        rg_track_gain: r.get(24)?,
+        rg_track_peak: r.get(25)?,
+        rg_album_gain: r.get(26)?,
+        rg_album_peak: r.get(27)?,
+        created_at: r.get(28)?,
+        omm_id: r.get(29)?,
+        starred_at: r.get(30)?,
+        rating: r.get(31)?,
+        play_count: r.get::<_, Option<i64>>(32)?.unwrap_or(0),
+        last_played: r.get(33)?,
     })
 }
 
@@ -169,16 +167,9 @@ pub fn songs_by_ids(
 
 #[derive(Default)]
 pub struct Extras {
-    pub folders: HashMap<i64, String>,
     pub artists: HashMap<String, Vec<(String, String)>>,
     pub genres: HashMap<String, Vec<String>>,
     pub album_artists: HashMap<String, Vec<(String, String)>>,
-}
-
-pub fn load_folders(conn: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
-    let mut stmt = conn.prepare("SELECT id, path FROM music_folders")?;
-    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect()
 }
 
 fn pairs(
@@ -240,10 +231,7 @@ pub fn load_extras(conn: &Connection, songs: &[SongRow]) -> rusqlite::Result<Ext
     album_ids.sort();
     album_ids.dedup();
 
-    let mut ex = Extras {
-        folders: load_folders(conn)?,
-        ..Default::default()
-    };
+    let mut ex = Extras::default();
     for (song, id, name) in pairs(
         conn,
         "SELECT sa.song_id, a.id, a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id WHERE sa.song_id IN",
@@ -262,16 +250,6 @@ pub fn load_extras(conn: &Connection, songs: &[SongRow]) -> rusqlite::Result<Ext
     }
     ex.album_artists = album_artist_map(conn, &album_ids)?;
     Ok(ex)
-}
-
-fn rel_path(path: &str, folder: Option<&String>) -> String {
-    match folder {
-        Some(root) => path
-            .strip_prefix(root.as_str())
-            .map(|p| p.trim_start_matches('/').to_string())
-            .unwrap_or_else(|| path.to_string()),
-        None => path.to_string(),
-    }
 }
 
 fn put(m: &mut Map<String, Value>, k: &str, v: impl Into<Value>) {
@@ -339,11 +317,7 @@ pub fn child_json(s: &SongRow, ex: &Extras) -> Value {
         "channelCount",
         (s.channels > 0).then_some(s.channels),
     );
-    put(
-        &mut m,
-        "path",
-        rel_path(&s.path, ex.folders.get(&s.folder_id)),
-    );
+    put(&mut m, "path", s.path.as_str());
     put(&mut m, "playCount", s.play_count);
     put_opt(&mut m, "played", s.last_played.map(iso));
     put_opt(&mut m, "discNumber", s.disc);
