@@ -5,6 +5,7 @@
   if (stale) {
     document.cookie = `juuz_tz=${offset}; path=/; max-age=31536000; samesite=lax`;
   }
+  if (!document.querySelector("[data-live]")) return;
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/events`;
   let busy = false;
   let queued = false;

@@ -8,6 +8,7 @@ use topcoat::router::error::{SeeOther, see_other};
 use topcoat::router::{query_params, request, route};
 
 use super::auth::{fail, https, require, require_admin, state, token};
+use super::nav::Page;
 use super::notice::{Notice, back};
 use crate::auth::{self, verify_password};
 use crate::db::users::{self, RoleUpdate};
@@ -30,11 +31,11 @@ async fn profile(cx: &Cx, Form(form): Form<ProfileForm>) -> Result<SeeOther> {
         "" => 0,
         raw => match raw.parse::<i64>() {
             Ok(v) if (0..=MAX_BIT_RATE).contains(&v) => v,
-            _ => return Ok(back(Notice::Invalid)),
+            _ => return Ok(back(Page::Account, Notice::Invalid)),
         },
     };
     if name.is_empty() || name.len() > MAX_FIELD {
-        return Ok(back(Notice::Invalid));
+        return Ok(back(Page::Account, Notice::Invalid));
     }
     let update = RoleUpdate {
         max_bit_rate: Some(rate),
@@ -52,11 +53,14 @@ async fn profile(cx: &Cx, Form(form): Form<ProfileForm>) -> Result<SeeOther> {
         })
         .await
         .map_err(fail)?;
-    Ok(back(if renamed {
-        Notice::Saved
-    } else {
-        Notice::UserExists
-    }))
+    Ok(back(
+        Page::Account,
+        if renamed {
+            Notice::Saved
+        } else {
+            Notice::UserExists
+        },
+    ))
 }
 
 #[derive(Deserialize)]
@@ -71,17 +75,17 @@ async fn password(cx: &Cx, Form(form): Form<PasswordForm>) -> Result<SeeOther> {
     let user = require(cx).await?;
     let st = state(cx);
     if form.new.is_empty() {
-        return Ok(back(Notice::Invalid));
+        return Ok(back(Page::Account, Notice::Invalid));
     }
     if form.new != form.confirm {
-        return Ok(back(Notice::PasswordMismatch));
+        return Ok(back(Page::Account, Notice::PasswordMismatch));
     }
     let (hash, current) = (user.password_hash.clone(), form.current);
     let valid = tokio::task::spawn_blocking(move || verify_password(&hash, &current))
         .await
         .unwrap_or(false);
     if !valid {
-        return Ok(back(Notice::PasswordWrong));
+        return Ok(back(Page::Account, Notice::PasswordWrong));
     }
     let (hash, sealed) = auth::credentials(&st.crypto, &form.new)
         .await
@@ -95,7 +99,7 @@ async fn password(cx: &Cx, Form(form): Form<PasswordForm>) -> Result<SeeOther> {
         })
         .await
         .map_err(fail)?;
-    Ok(back(Notice::PasswordChanged))
+    Ok(back(Page::Account, Notice::PasswordChanged))
 }
 
 #[derive(Deserialize)]
@@ -111,7 +115,7 @@ async fn delete_key(cx: &Cx, Form(form): Form<KeyDeleteForm>) -> Result<SeeOther
         .run(move |c| Ok(users::delete_api_key(c, &user.id, &form.id)?))
         .await
         .map_err(fail)?;
-    Ok(back(Notice::KeyDeleted))
+    Ok(back(Page::Keys, Notice::KeyDeleted))
 }
 
 const LASTFM_COOKIE: &str = "juuz_lastfm";
@@ -136,7 +140,7 @@ fn origin(cx: &Cx) -> Option<String> {
 async fn lastfm_start(cx: &Cx) -> Result<SeeOther> {
     require(cx).await?;
     let (Some(client), Some(base)) = (state(cx).lastfm.clone(), origin(cx)) else {
-        return Ok(back(Notice::LastfmFailed));
+        return Ok(back(Page::Account, Notice::LastfmFailed));
     };
     let nonce = hex::encode(rand::random::<[u8; 16]>());
     cookies(cx).add(
@@ -177,28 +181,28 @@ async fn lastfm_callback(cx: &Cx) -> Result<SeeOther> {
         query.state.clone(),
         query.token.clone(),
     ) else {
-        return Ok(back(Notice::LastfmFailed));
+        return Ok(back(Page::Account, Notice::LastfmFailed));
     };
     let differs = expected
         .bytes()
         .zip(given.bytes())
         .fold(0u8, |acc, (x, y)| acc | (x ^ y));
     if expected.len() != given.len() || differs != 0 {
-        return Ok(back(Notice::LastfmFailed));
+        return Ok(back(Page::Account, Notice::LastfmFailed));
     }
     let session = tokio::task::spawn_blocking(move || client.session(&token))
         .await
         .ok()
         .and_then(Result::ok);
     let Some((key, name)) = session else {
-        return Ok(back(Notice::LastfmFailed));
+        return Ok(back(Page::Account, Notice::LastfmFailed));
     };
     let sealed = st.crypto.seal(key.as_bytes());
     st.db
         .run(move |c| Ok(users::set_lastfm(c, &user.id, Some((&sealed, &name)))?))
         .await
         .map_err(fail)?;
-    Ok(back(Notice::LastfmLinked))
+    Ok(back(Page::Account, Notice::LastfmLinked))
 }
 
 #[route(POST "/account/lastfm/unlink")]
@@ -209,7 +213,7 @@ async fn lastfm_unlink(cx: &Cx) -> Result<SeeOther> {
         .run(move |c| Ok(users::set_lastfm(c, &user.id, None)?))
         .await
         .map_err(fail)?;
-    Ok(back(Notice::LastfmUnlinked))
+    Ok(back(Page::Account, Notice::LastfmUnlinked))
 }
 
 #[derive(Deserialize)]
@@ -225,7 +229,7 @@ async fn create_user(cx: &Cx, Form(form): Form<CreateForm>) -> Result<SeeOther> 
     let st = state(cx);
     let name = form.username.trim().to_string();
     if name.is_empty() || name.len() > MAX_FIELD || form.password.is_empty() {
-        return Ok(back(Notice::Invalid));
+        return Ok(back(Page::Users, Notice::Invalid));
     }
     let (hash, sealed) = auth::credentials(&st.crypto, &form.password)
         .await
@@ -242,11 +246,14 @@ async fn create_user(cx: &Cx, Form(form): Form<CreateForm>) -> Result<SeeOther> 
         })
         .await
         .map_err(fail)?;
-    Ok(back(if created {
-        Notice::UserCreated
-    } else {
-        Notice::UserExists
-    }))
+    Ok(back(
+        Page::Users,
+        if created {
+            Notice::UserCreated
+        } else {
+            Notice::UserExists
+        },
+    ))
 }
 
 #[derive(Deserialize)]
@@ -319,7 +326,7 @@ async fn update_user(cx: &Cx, Form(form): Form<UpdateForm>) -> Result<SeeOther> 
         })
         .await
         .map_err(fail)?;
-    Ok(back(outcome))
+    Ok(back(Page::Users, outcome))
 }
 
 #[derive(Deserialize)]
@@ -344,7 +351,7 @@ async fn delete_user(cx: &Cx, Form(form): Form<DeleteForm>) -> Result<SeeOther> 
         })
         .await
         .map_err(fail)?;
-    Ok(back(outcome))
+    Ok(back(Page::Users, outcome))
 }
 
 #[derive(Deserialize)]
@@ -356,11 +363,14 @@ struct ScanForm {
 async fn scan(cx: &Cx, Form(form): Form<ScanForm>) -> Result<SeeOther> {
     require_admin(cx).await?;
     let started = state(cx).scanner.start(form.full.is_some());
-    Ok(back(if started {
-        Notice::ScanStarted
-    } else {
-        Notice::ScanBusy
-    }))
+    Ok(back(
+        Page::Server,
+        if started {
+            Notice::ScanStarted
+        } else {
+            Notice::ScanBusy
+        },
+    ))
 }
 
 pub fn routes(b: RouterBuilder) -> RouterBuilder {

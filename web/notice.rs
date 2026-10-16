@@ -1,5 +1,7 @@
 use topcoat::router::error::{SeeOther, see_other};
 
+use super::nav::Page;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Notice {
     LoginFailed,
@@ -110,6 +112,6 @@ impl Notice {
     }
 }
 
-pub fn back(notice: Notice) -> SeeOther {
-    see_other(format!("/?n={}", notice.code()))
+pub fn back(page: Page, notice: Notice) -> SeeOther {
+    see_other(format!("{}?n={}", page.path(), notice.code()))
 }

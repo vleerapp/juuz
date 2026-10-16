@@ -6,16 +6,19 @@ use topcoat::router::content::Form;
 use topcoat::router::{HeaderName, HeaderValue, Slot, header, layout, page, query_params, route};
 use topcoat::view::{Child, View, class, component, view};
 
-use super::auth::{current, fail, require, state};
-use super::data::{self, Account, Admin, Day, Playing, Range, Ranked, Recent, Stats};
+use super::auth::{current, fail, require, require_admin, state};
+use super::data::{self, Account, Admin, Playing, Range, Ranked, Recent, Stats};
+use super::nav::Page;
 use super::notice::Notice;
 use crate::auth as crypto;
 use crate::db::users::{self, User};
 
 const STYLE: &str = include_str!("style.css");
-const PAPER: &[u8] = include_bytes!("paper.webp");
-const FONT: &[u8] = include_bytes!("Dareo.otf");
+const FONT: &[u8] = include_bytes!("DepartureMono.woff2");
 const LIVE: &str = include_str!("live.js");
+const TERM: &str = include_str!("term.js");
+const BAR_WIDTH: i64 = 40;
+const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 #[derive(Clone)]
 enum Reveal {
@@ -31,25 +34,36 @@ struct Scan {
 }
 
 #[derive(Clone)]
-struct Control {
-    data: Admin,
-    scan: Scan,
-    config: Vec<(&'static str, String)>,
-}
-
-#[derive(Clone)]
-struct Dashboard {
+struct StatsBoard {
     me: User,
-    notice: Option<Notice>,
-    reveal: Reveal,
     range: Range,
     everyone: bool,
     stats: Stats,
     playing: Vec<Playing>,
+    tz: i64,
+}
+
+#[derive(Clone)]
+struct KeysBoard {
+    me: User,
+    reveal: Reveal,
+    account: Account,
+    tz: i64,
+}
+
+#[derive(Clone)]
+struct AccountBoard {
+    me: User,
     account: Account,
     lastfm_ready: bool,
+}
+
+#[derive(Clone)]
+struct ServerBoard {
+    me: User,
+    scan: Scan,
+    config: Vec<(&'static str, String)>,
     tz: i64,
-    control: Option<Control>,
 }
 
 #[query_params(error = bad_request)]
@@ -69,6 +83,11 @@ fn timezone(cx: &Cx) -> i64 {
 
 fn onoff(v: bool) -> String {
     if v { "on" } else { "off" }.to_string()
+}
+
+fn notice_of(cx: &Cx) -> Result<Option<Notice>> {
+    let query = query_params::<Query>(cx)?;
+    Ok(Notice::parse(query.n.as_deref()))
 }
 
 fn config_rows(cx: &Cx) -> Vec<(&'static str, String)> {
@@ -99,14 +118,7 @@ fn config_rows(cx: &Cx) -> Vec<(&'static str, String)> {
     ]
 }
 
-async fn load(
-    cx: &Cx,
-    me: User,
-    notice: Option<Notice>,
-    reveal: Reveal,
-    range: Range,
-    everyone: bool,
-) -> Result<Dashboard> {
+async fn stats_board(cx: &Cx, me: User, range: Range, everyone: bool) -> Result<StatsBoard> {
     let st = state(cx);
     let tz = timezone(cx);
     let everyone = everyone && me.admin;
@@ -119,54 +131,42 @@ async fn load(
         .filter(|(uid, _)| scope.as_deref().is_none_or(|s| s == uid.as_str()))
         .map(|(_, n)| (n.song_id.clone(), n.username.clone(), n.player.clone()))
         .collect();
-    let (viewer, is_admin) = (me.clone(), me.admin);
-    let (stats, playing, account, admin) = st
+    let (stats, playing) = st
         .db
         .run(move |c| {
             let stats = data::stats(c, scope.as_deref(), range, tz)?;
             let playing = data::playing(c, entries);
-            let account = data::account(c, &viewer)?;
-            let admin = if is_admin {
-                Some(data::admin(c)?)
-            } else {
-                None
-            };
-            Ok((stats, playing, account, admin))
+            Ok((stats, playing))
         })
         .await
         .map_err(fail)?;
-    let control = match admin {
-        Some(data) => {
-            let status = st.scanner.status().map_err(fail)?;
-            Some(Control {
-                data,
-                scan: Scan {
-                    scanning: status.scanning,
-                    count: status.count,
-                    last_scan: status.last_scan,
-                },
-                config: config_rows(cx),
-            })
-        }
-        None => None,
-    };
-    Ok(Dashboard {
+    Ok(StatsBoard {
         me,
-        notice,
-        reveal,
         range,
         everyone,
         stats,
         playing,
-        account,
-        lastfm_ready: st.lastfm.is_some(),
         tz,
-        control,
+    })
+}
+
+async fn keys_board(cx: &Cx, me: User, reveal: Reveal) -> Result<KeysBoard> {
+    let viewer = me.clone();
+    let account = state(cx)
+        .db
+        .run(move |c| data::account(c, &viewer))
+        .await
+        .map_err(fail)?;
+    Ok(KeysBoard {
+        me,
+        reveal,
+        account,
+        tz: timezone(cx),
     })
 }
 
 #[route(GET "/juuz.css")]
-async fn stylesheet() -> Result<([(HeaderName, HeaderValue); 2], String)> {
+async fn stylesheet() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
         [
             (
@@ -178,29 +178,15 @@ async fn stylesheet() -> Result<([(HeaderName, HeaderValue); 2], String)> {
                 HeaderValue::from_static("private, max-age=86400"),
             ),
         ],
-        format!("{STYLE}\n{}", super::sketch::css()),
+        STYLE,
     ))
 }
 
-#[route(GET "/paper.webp")]
-async fn paper() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
-    Ok((
-        [
-            (header::CONTENT_TYPE, HeaderValue::from_static("image/webp")),
-            (
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=604800"),
-            ),
-        ],
-        PAPER,
-    ))
-}
-
-#[route(GET "/dareo.otf")]
+#[route(GET "/departure-mono.woff2")]
 async fn font() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
     Ok((
         [
-            (header::CONTENT_TYPE, HeaderValue::from_static("font/otf")),
+            (header::CONTENT_TYPE, HeaderValue::from_static("font/woff2")),
             (
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("public, max-age=604800"),
@@ -224,6 +210,24 @@ async fn live_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)>
     ))
 }
 
+#[route(GET "/term.js")]
+async fn term_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/javascript; charset=utf-8"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+        ],
+        TERM,
+    ))
+}
+
+fn style_version() -> u64 {
+    xxhash_rust::xxh3::xxh3_64(STYLE.as_bytes())
+}
+
 #[layout("/")]
 async fn frame(slot: Slot<'_>) -> Result<impl View> {
     Ok(view! {
@@ -232,11 +236,10 @@ async fn frame(slot: Slot<'_>) -> Result<impl View> {
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <meta name="color-scheme" content="light">
+                <meta name="color-scheme" content="dark">
                 <title>"juuz"</title>
-                <link rel="preload" href="/dareo.otf" as="font" type="font/otf" crossorigin="">
-                <link rel="preload" href="/paper.webp" as="image" type="image/webp">
-                <link rel="stylesheet" href="/juuz.css">
+                <link rel="preload" href="/departure-mono.woff2" as="font" type="font/woff2" crossorigin="">
+                <link rel="stylesheet" href=(format!("/juuz.css?v={:x}", style_version()))>
             </head>
             <body>(slot)</body>
         </html>
@@ -252,16 +255,68 @@ async fn home(cx: &Cx) -> Result<impl View> {
         Some(me) => {
             let range = Range::parse(query.range.as_deref());
             let everyone = query.scope.as_deref() == Some("all");
-            Some(load(cx, me, notice, Reveal::None, range, everyone).await?)
+            Some(stats_board(cx, me, range, everyone).await?)
         }
         None => None,
     };
     Ok(view! {
         match board {
-            Some(board) => dashboard(board: board),
-            None => login(notice: notice),
+            Some(board) => stats_page(board: board, notice: notice),
+            None => login_page(notice: notice),
         }
     })
+}
+
+#[page("/account")]
+async fn account_page(cx: &Cx) -> Result<impl View> {
+    let me = require(cx).await?;
+    let notice = notice_of(cx)?;
+    let viewer = me.clone();
+    let account = state(cx)
+        .db
+        .run(move |c| data::account(c, &viewer))
+        .await
+        .map_err(fail)?;
+    let board = AccountBoard {
+        me,
+        account,
+        lastfm_ready: state(cx).lastfm.is_some(),
+    };
+    Ok(view! { account_view(board: board, notice: notice) })
+}
+
+#[page("/account/keys")]
+async fn keys_page(cx: &Cx) -> Result<impl View> {
+    let me = require(cx).await?;
+    let notice = notice_of(cx)?;
+    let board = keys_board(cx, me, Reveal::None).await?;
+    Ok(view! { keys_view(board: board, notice: notice) })
+}
+
+#[page("/admin")]
+async fn users_page(cx: &Cx) -> Result<impl View> {
+    let me = require_admin(cx).await?;
+    let notice = notice_of(cx)?;
+    let admin = state(cx).db.run(|c| data::admin(c)).await.map_err(fail)?;
+    Ok(view! { users_view(me: me, admin: admin, notice: notice) })
+}
+
+#[page("/admin/server")]
+async fn server_page(cx: &Cx) -> Result<impl View> {
+    let me = require_admin(cx).await?;
+    let notice = notice_of(cx)?;
+    let status = state(cx).scanner.status().map_err(fail)?;
+    let board = ServerBoard {
+        me,
+        scan: Scan {
+            scanning: status.scanning,
+            count: status.count,
+            last_scan: status.last_scan,
+        },
+        config: config_rows(cx),
+        tz: timezone(cx),
+    };
+    Ok(view! { server_view(board: board, notice: notice) })
 }
 
 #[derive(Deserialize)]
@@ -281,26 +336,22 @@ async fn create_key(cx: &Cx, Form(form): Form<KeyForm>) -> Result<impl View> {
         .run(move |c| Ok(users::create_api_key(c, &uid, &label, &hash)?))
         .await
         .map_err(fail)?;
-    let board = load(
-        cx,
-        me,
-        Some(Notice::Saved),
-        Reveal::Key { name, key },
-        Range::Month,
-        false,
-    )
-    .await?;
-    Ok(view! { dashboard(board: board) })
+    let board = keys_board(cx, me, Reveal::Key { name, key }).await?;
+    Ok(view! { keys_view(board: board, notice: Some(Notice::Saved)) })
 }
 
 pub fn routes(b: topcoat::router::RouterBuilder) -> topcoat::router::RouterBuilder {
     b.layout(frame)
         .page(home)
+        .page(account_page)
+        .page(keys_page)
+        .page(users_page)
+        .page(server_page)
         .page(create_key)
         .route(stylesheet)
-        .route(paper)
         .route(font)
         .route(live_script)
+        .route(term_script)
 }
 
 fn duration(ms: i64) -> String {
@@ -337,8 +388,16 @@ fn ago(ts: i64, tz: i64) -> String {
     }
 }
 
-fn pct(value: i64, max: i64) -> i64 {
-    if max <= 0 { 0 } else { value * 100 / max }
+fn bar(value: i64, max: i64) -> String {
+    if value <= 0 || max <= 0 {
+        return String::new();
+    }
+    let eighths = ((value * BAR_WIDTH * 8 + max / 2) / max).max(1) as usize;
+    let mut out = "█".repeat(eighths / 8);
+    if !eighths.is_multiple_of(8) {
+        out.push(EIGHTHS[eighths % 8]);
+    }
+    out
 }
 
 fn flags(u: &User) -> [(&'static str, &'static str, bool); 11] {
@@ -373,6 +432,47 @@ async fn banner(notice: Option<Notice>) -> Result<impl View> {
 }
 
 #[component]
+async fn shell(
+    page: Option<Page>,
+    name: &str,
+    admin: bool,
+    notice: Option<Notice>,
+    #[default] child: Child<'_>,
+) -> Result<impl View> {
+    let authed = !name.is_empty();
+    Ok(view! {
+        <div class="screen">
+            <header>
+                <h1>"juuz"</h1>
+                if authed {
+                    <div class="who">
+                        <span>(name)</span>
+                        <form method="post" action="/logout"><button class="ghost">"sign out"</button></form>
+                    </div>
+                }
+            </header>
+            if authed {
+                <nav class="tabs" aria-label="pages">
+                    for entry in Page::EACH {
+                        if admin || !entry.admin() {
+                            <a
+                                href=(entry.path())
+                                data-key=(entry.key().to_string())
+                                class=(class!("tab", "on" if Some(entry) == page))
+                            >(entry.label())</a>
+                        }
+                    }
+                </nav>
+            }
+            banner(notice: notice)
+            <main>(child)</main>
+        </div>
+        if authed { <script src="/live.js" defer=""></script> }
+        <script src="/term.js"></script>
+    })
+}
+
+#[component]
 async fn panel(
     #[default] title: &str,
     #[default] note: &str,
@@ -380,121 +480,142 @@ async fn panel(
     #[default] child: Child<'_>,
 ) -> Result<impl View> {
     Ok(view! {
-        <section class=(class!("card", "wide" if wide))>
+        <section class=(class!("panel", "wide" if wide))>
             if !title.is_empty() {
-                <div class="head">
-                    <h2>(title)</h2>
-                    if !note.is_empty() { <small>(note)</small> }
-                </div>
+                <h2>(title) if !note.is_empty() { <small>(note)</small> }</h2>
             }
-            <div class="body">(child)</div>
+            (child)
         </section>
     })
 }
 
 #[component]
-async fn login(notice: Option<Notice>) -> Result<impl View> {
+async fn field(
+    label: &str,
+    name: &str,
+    kind: &str,
+    auto: &str,
+    #[default] value: &str,
+    #[default] mode: &str,
+    #[default] required: bool,
+    #[default] focus: bool,
+) -> Result<impl View> {
     Ok(view! {
-        <main class="login">
-            <h1>"juuz"</h1>
-            banner(notice: notice)
-            <form method="post" action="/login" class="form">
-                <label>"username"<input name="username" autocomplete="username" required="" autofocus=""></label>
-                <label>"password"<input name="password" type="password" autocomplete="current-password" required=""></label>
-                <button>"sign in"</button>
-            </form>
-        </main>
+        <label>
+            <span class="lbl">(label)</span>
+            <input name=(name) type=(kind) autocomplete=(auto) value=(value) inputmode=(mode) required=(required) autofocus=(focus)>
+        </label>
     })
 }
 
 #[component]
-async fn dashboard(board: Dashboard) -> Result<impl View> {
+async fn check(
+    name: &str,
+    label: &str,
+    #[default] checked: bool,
+    #[default] disabled: bool,
+) -> Result<impl View> {
     Ok(view! {
-        <header>
-            <h1>"juuz"</h1>
-            <span class="who">(board.me.name.as_str())</span>
-            <form method="post" action="/logout"><button class="ghost">"sign out"</button></form>
-        </header>
-        <main>
-            <div class="lead">
-                banner(notice: board.notice)
-                stats_section(board: &board)
-            </div>
-            <hr class="rule">
-            account_section(board: &board)
-            keys_section(board: &board)
-            match &board.control {
-                Some(control) => {
-                    <hr class="rule">
-                    control_section(control: control, me: board.me.id.as_str(), tz: board.tz)
-                },
-                None => "",
-            }
-        </main>
-        <script src="/live.js" defer=""></script>
+        <label class="check">
+            <input type="checkbox" name=(name) checked=(checked) disabled=(disabled)>
+            (label)
+        </label>
     })
 }
 
 #[component]
-async fn stats_section(board: &Dashboard) -> Result<impl View> {
-    let stats = &board.stats;
-    let top = stats.days.iter().map(|d| d.plays).max().unwrap_or(0);
+async fn login_page(notice: Option<Notice>) -> Result<impl View> {
     Ok(view! {
-        panel(
-            wide: true,
-            <div class="live" data-live="stats">
-            <div class="toolbar">
-                <dl class="tiles">
-                    tile(label: "plays", value: stats.plays.to_string())
-                    tile(label: "listened", value: duration(stats.listened_ms))
-                    tile(label: "songs", value: stats.library.songs.to_string())
-                    tile(label: "albums", value: stats.library.albums.to_string())
-                    tile(label: "artists", value: stats.library.artists.to_string())
-                    tile(label: "library", value: duration(stats.library.duration_ms))
-                    tile(label: "size", value: bytes(stats.library.bytes))
-                    tile(label: "users", value: stats.library.users.to_string())
-                </dl>
-                <div class="filters">
-                    <nav class="chips">
-                        for range in Range::EACH {
-                            <a
-                                href=(view_link(range, board.everyone))
-                                class=(class!("chip", "on" if range == board.range))
-                            >(range.label())</a>
-                        }
-                    </nav>
-                    if board.me.admin {
-                        <nav class="chips">
-                            <a href=(view_link(board.range, false)) class=(class!("chip", "on" if !board.everyone))>"just me"</a>
-                            <a href=(view_link(board.range, true)) class=(class!("chip", "on" if board.everyone))>"everyone"</a>
-                        </nav>
+        shell(
+            page: None,
+            name: "",
+            admin: false,
+            notice: notice,
+            panel(
+                    title: "sign in",
+                    <form method="post" action="/login">
+                        field(label: "username", name: "username", kind: "text", auto: "username", required: true, focus: true)
+                        field(label: "password", name: "password", kind: "password", auto: "current-password", required: true)
+                        <button>"sign in"</button>
+                    </form>
+                )
+        )
+    })
+}
+
+#[component]
+async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl View> {
+    let top = board.stats.days.iter().map(|d| d.plays).max().unwrap_or(0);
+    let chart_title = format!("plays per {}", board.range.unit());
+    Ok(view! {
+        shell(
+            page: Some(Page::Stats),
+            name: board.me.name.as_str(),
+            admin: board.me.admin,
+            notice: notice,
+            <nav class="filters" aria-label="filters">
+                <div class="group" role="group" aria-label="range">
+                    for range in Range::EACH {
+                        <a
+                            href=(view_link(range, board.everyone))
+                            class=(class!("chip", "on" if range == board.range))
+                        >(range.label())</a>
                     }
                 </div>
-            </div>
-            <div class="chart" aria-label="plays per day, last 14 days">
-                for day in stats.days.iter() {
-                    chart_day(day: day, top: top)
+                if board.me.admin {
+                    <div class="group" role="group" aria-label="view">
+                        <a href=(view_link(board.range, false)) class=(class!("chip", "on" if !board.everyone))>"just me"</a>
+                        <a href=(view_link(board.range, true)) class=(class!("chip", "on" if board.everyone))>"everyone"</a>
+                    </div>
                 }
-            </div>
-            if !board.playing.is_empty() {
-                <div class="group">
-                    <h3>"now playing"</h3>
-                    <ul class="list">
-                        for item in board.playing.iter() {
-                            <li>
-                                <span>(item.title.as_str()) <small>(item.artist.as_str())</small></span>
-                                <small>(item.user.as_str()) " · " (item.player.as_str())</small>
-                            </li>
+            </nav>
+            <div class="live" data-live="stats">
+                panel(
+                    title: "overview",
+                    note: board.range.label(),
+                                        wide: true,
+                                        <dl class="tiles">
+                        tile(label: "plays", value: board.stats.plays.to_string())
+                        tile(label: "listened", value: duration(board.stats.listened_ms))
+                        tile(label: "songs", value: board.stats.library.songs.to_string())
+                        tile(label: "albums", value: board.stats.library.albums.to_string())
+                        tile(label: "artists", value: board.stats.library.artists.to_string())
+                        tile(label: "library", value: duration(board.stats.library.duration_ms))
+                        tile(label: "size", value: bytes(board.stats.library.bytes))
+                        tile(label: "users", value: board.stats.library.users.to_string())
+                    </dl>
+                )
+                if !board.playing.is_empty() {
+                    panel(
+                        title: "now playing",
+                                                wide: true,
+                                                <ul>
+                            for item in board.playing.iter() {
+                                <li>
+                                    <span class="t">(item.title.as_str()) <small>(item.artist.as_str())</small></span>
+                                    <span class="r">(item.user.as_str()) " · " (item.player.as_str())</span>
+                                </li>
+                            }
+                        </ul>
+                    )
+                }
+                panel(
+                    title: chart_title.as_str(),
+                    note: board.range.label(),
+                    <div class="chart" role="img" aria-label=(chart_title.as_str())>
+                        for day in board.stats.days.iter() {
+                            <div class="day">
+                                <span class="d">(day.label.as_str())</span>
+                                <span class="bar">(bar(day.plays, top))</span>
+                                <b>(day.plays)</b>
+                            </div>
                         }
-                    </ul>
-                </div>
-            }
-            <div class="cols">
-                ranked_list(title: "top songs", items: &stats.songs)
-                ranked_list(title: "top albums", items: &stats.albums)
-                ranked_list(title: "top artists", items: &stats.artists)
-                recent_list(items: &stats.recent, everyone: board.everyone, tz: board.tz)
-            </div>
+                    </div>
+                )
+                recent_list(items: &board.stats.recent, everyone: board.everyone, tz: board.tz)
+                ranked_list(title: "top songs", items: &board.stats.songs)
+                ranked_list(title: "top albums", items: &board.stats.albums)
+                ranked_list(title: "top artists", items: &board.stats.artists)
             </div>
         )
     })
@@ -503,32 +624,22 @@ async fn stats_section(board: &Dashboard) -> Result<impl View> {
 #[component]
 async fn tile(label: &str, value: String) -> Result<impl View> {
     Ok(view! {
-        <div class="tile"><dd>(value)</dd><dt>(label)</dt></div>
-    })
-}
-
-#[component]
-async fn chart_day(day: &Day, top: i64) -> Result<impl View> {
-    Ok(view! {
-        <div class="col" title=(format!("{}: {}", day.label, day.plays))>
-            <div class="bar" style=(format!("height:{}%", pct(day.plays, top).max(2)))></div>
-            <span>(day.label.as_str())</span>
-        </div>
+        <div class="tile"><dt>(label)</dt><dd>(value)</dd></div>
     })
 }
 
 #[component]
 async fn ranked_list(title: &str, items: &[Ranked]) -> Result<impl View> {
     Ok(view! {
-        <div class="group">
-            <h3>(title)</h3>
+        panel(
+            title: title,
             if items.is_empty() {
                 <p class="muted">"nothing yet"</p>
             } else {
-                <ol class="list">
+                <ol>
                     for item in items.iter() {
                         <li>
-                            <span>(item.name.as_str())
+                            <span class="t">(item.name.as_str())
                                 if !item.sub.is_empty() { <small>(item.sub.as_str())</small> }
                             </span>
                             <b>(item.plays)</b>
@@ -536,161 +647,198 @@ async fn ranked_list(title: &str, items: &[Ranked]) -> Result<impl View> {
                     }
                 </ol>
             }
-        </div>
+        )
     })
 }
 
 #[component]
 async fn recent_list(items: &[Recent], everyone: bool, tz: i64) -> Result<impl View> {
     Ok(view! {
-        <div class="group">
-            <h3>"recent plays"</h3>
+        panel(
+            title: "recent plays",
             if items.is_empty() {
                 <p class="muted">"nothing yet"</p>
             } else {
-                <ul class="list">
+                <ul>
                     for item in items.iter() {
                         <li>
-                            <span>(item.title.as_str()) <small>(item.artist.as_str())</small></span>
-                            <small>
+                            <span class="t">(item.title.as_str()) <small>(item.artist.as_str())</small></span>
+                            <span class="r">
                                 if everyone { (item.user.as_str()) " · " }
                                 (ago(item.played_at, tz))
-                            </small>
-                        </li>
-                    }
-                </ul>
-            }
-        </div>
-    })
-}
-
-#[component]
-async fn account_section(board: &Dashboard) -> Result<impl View> {
-    let me = &board.me;
-    Ok(view! {
-        panel(
-            title: "profile",
-            <form method="post" action="/account/profile" class="form">
-                <label>"username"<input name="username" autocomplete="username" maxlength="254" required="" value=(me.name.as_str())></label>
-                <label>"max bitrate (kbps, 0 = unlimited)"
-                    <input name="max_bit_rate" inputmode="numeric" pattern="[0-9]*" value=(me.max_bit_rate.to_string())>
-                </label>
-                <label class="check"><input type="checkbox" name="scrobbling" checked=(me.scrobbling)>"record my plays"</label>
-                <button>"save"</button>
-            </form>
-        )
-        panel(
-            title: "password",
-            <form method="post" action="/account/password" class="form">
-                <label>"current"<input name="current" type="password" autocomplete="current-password" required=""></label>
-                <label>"new"<input name="new" type="password" autocomplete="new-password" required=""></label>
-                <label>"repeat"<input name="confirm" type="password" autocomplete="new-password" required=""></label>
-                <button>"change password"</button>
-            </form>
-        )
-        panel(
-            title: "last.fm",
-            match (&board.account.lastfm, board.lastfm_ready) {
-                (Some(name), _) => <form method="post" action="/account/lastfm/unlink" class="row">
-                    <span>"linked as " <strong>(name.as_str())</strong></span>
-                    <button class="ghost">"unlink"</button>
-                </form>,
-                (None, true) => <form method="post" action="/account/lastfm/start" class="row">
-                    <span class="muted">"not linked"</span>
-                    <button>"link"</button>
-                </form>,
-                (None, false) => <p class="muted">"not configured on this server"</p>,
-            }
-        )
-    })
-}
-
-#[component]
-async fn keys_section(board: &Dashboard) -> Result<impl View> {
-    Ok(view! {
-        panel(
-            title: "api keys",
-            match &board.reveal {
-                Reveal::Key { name, key } => <div class="group">
-                    <h3>"new key: " (name.as_str()) " (shown once, copy it now)"</h3>
-                    <code class="secret">(key.as_str())</code>
-                </div>,
-                Reveal::None => "",
-            }
-            if board.account.keys.is_empty() {
-                <p class="muted">"no keys"</p>
-            } else {
-                <ul class="list">
-                    for key in board.account.keys.iter() {
-                        <li>
-                            <span>
-                                (if key.name.is_empty() { "unnamed" } else { key.name.as_str() })
-                                <small>(ago(key.created, board.tz))</small>
                             </span>
-                            <form method="post" action="/account/apikeys/delete">
-                                <input type="hidden" name="id" value=(key.id.as_str())>
-                                <button class="ghost danger">"delete"</button>
-                            </form>
                         </li>
                     }
                 </ul>
             }
-            <form method="post" action="/account/apikeys" class="row">
-                <input name="name" placeholder="label" maxlength="80">
-                <button>"create key"</button>
-            </form>
         )
     })
 }
 
 #[component]
-async fn control_section(control: &Control, me: &str, tz: i64) -> Result<impl View> {
+async fn account_view(board: AccountBoard, notice: Option<Notice>) -> Result<impl View> {
+    let rate = board.me.max_bit_rate.to_string();
     Ok(view! {
-        panel(
-            title: "users",
-            note: "admin only",
-            wide: true,
-            <div class="members">
-                for member in control.data.members.iter() {
-                    member_row(member: member, me: me)
+        shell(
+            page: Some(Page::Account),
+            name: board.me.name.as_str(),
+            admin: board.me.admin,
+            notice: notice,
+            panel(
+                title: "profile",
+                <form method="post" action="/account/profile">
+                    field(label: "username", name: "username", kind: "text", auto: "username", value: board.me.name.as_str(), required: true)
+                    field(label: "max bitrate (kbps, 0 = unlimited)", name: "max_bit_rate", kind: "text", auto: "off", value: rate.as_str(), mode: "numeric")
+                    check(name: "scrobbling", label: "record my plays", checked: board.me.scrobbling)
+                    <button>"save"</button>
+                </form>
+            )
+            panel(
+                title: "password",
+                <form method="post" action="/account/password">
+                    field(label: "current", name: "current", kind: "password", auto: "current-password", required: true)
+                    field(label: "new", name: "new", kind: "password", auto: "new-password", required: true)
+                    field(label: "repeat", name: "confirm", kind: "password", auto: "new-password", required: true)
+                    <button>"change password"</button>
+                </form>
+            )
+            panel(
+                title: "last.fm",
+                                wide: true,
+                                match (&board.account.lastfm, board.lastfm_ready) {
+                    (Some(name), _) => <form method="post" action="/account/lastfm/unlink">
+                        <span>"linked as " <strong>(name.as_str())</strong></span>
+                        <button class="ghost">"unlink"</button>
+                    </form>,
+                    (None, true) => <form method="post" action="/account/lastfm/start">
+                        <span class="muted">"not linked"</span>
+                        <button>"link"</button>
+                    </form>,
+                    (None, false) => <p class="muted">"not configured on this server"</p>,
                 }
-            </div>
-            <form method="post" action="/admin/users/create" class="form group">
-                <h3>"new user"</h3>
-                <div class="row">
-                    <input name="username" placeholder="username" autocomplete="off" required="">
-                    <input name="password" type="password" placeholder="password" autocomplete="new-password" required="">
-                    <label class="check"><input type="checkbox" name="admin">"admin"</label>
-                    <button>"create user"</button>
-                </div>
-            </form>
+            )
         )
-        <hr class="rule">
-        panel(
-            title: "server",
-            note: "read only",
-            <dl class="facts">
-                for (label, value) in control.config.iter() {
-                    <div><dt>(*label)</dt><dd>(value.as_str())</dd></div>
+    })
+}
+
+#[component]
+async fn keys_view(board: KeysBoard, notice: Option<Notice>) -> Result<impl View> {
+    Ok(view! {
+        shell(
+            page: Some(Page::Keys),
+            name: board.me.name.as_str(),
+            admin: board.me.admin,
+            notice: notice,
+            panel(
+                title: "api keys",
+                                wide: true,
+                                match &board.reveal {
+                    Reveal::Key { name, key } => <div class="reveal">
+                        <p class="lbl">"new key: " (name.as_str()) " (shown once, copy it now)"</p>
+                        <code class="secret">(key.as_str())</code>
+                    </div>,
+                    Reveal::None => "",
                 }
-            </dl>
+                if board.account.keys.is_empty() {
+                    <p class="muted">"no keys"</p>
+                } else {
+                    <ul>
+                        for key in board.account.keys.iter() {
+                            <li>
+                                <span class="t">
+                                    (if key.name.is_empty() { "unnamed" } else { key.name.as_str() })
+                                    <small>(ago(key.created, board.tz))</small>
+                                </span>
+                                <form method="post" action="/account/apikeys/delete">
+                                    <input type="hidden" name="id" value=(key.id.as_str())>
+                                    <button class="ghost danger">"delete"</button>
+                                </form>
+                            </li>
+                        }
+                    </ul>
+                }
+            )
+            panel(
+                title: "new key",
+                                wide: true,
+                                <form method="post" action="/account/apikeys">
+                    <label>
+                        <span class="lbl">"label"</span>
+                        <input name="name" maxlength="80" autocomplete="off">
+                    </label>
+                    <button>"create key"</button>
+                </form>
+            )
         )
-        panel(
-            title: "library scan",
-            <p class="muted" data-live="scan">
-                if control.scan.scanning { "scanning, " (control.scan.count) " songs so far" }
-                else {
-                    (control.scan.count) " songs"
-                    match control.scan.last_scan {
-                        Some(t) => { ", last scan " (ago(t, tz)) },
-                        None => "",
+    })
+}
+
+#[component]
+async fn users_view(me: User, admin: Admin, notice: Option<Notice>) -> Result<impl View> {
+    Ok(view! {
+        shell(
+            page: Some(Page::Users),
+            name: me.name.as_str(),
+            admin: true,
+            notice: notice,
+            panel(
+                title: "users",
+                wide: true,
+                note: "admin only",
+                                <div class="members">
+                    for member in admin.members.iter() {
+                        member_row(member: member, me: me.id.as_str())
                     }
-                }
-            </p>
-            <form method="post" action="/admin/scan" class="row">
-                <label class="check"><input type="checkbox" name="full">"full rescan"</label>
-                <button>"start scan"</button>
-            </form>
+                </div>
+            )
+            panel(
+                title: "new user",
+                                wide: true,
+                                <form method="post" action="/admin/users/create">
+                    field(label: "username", name: "username", kind: "text", auto: "off", required: true)
+                    field(label: "password", name: "password", kind: "password", auto: "new-password", required: true)
+                    check(name: "admin", label: "admin")
+                    <button>"create user"</button>
+                </form>
+            )
+        )
+    })
+}
+
+#[component]
+async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl View> {
+    Ok(view! {
+        shell(
+            page: Some(Page::Server),
+            name: board.me.name.as_str(),
+            admin: true,
+            notice: notice,
+            panel(
+                title: "server",
+                note: "read only",
+                <dl class="facts">
+                    for (label, value) in board.config.iter() {
+                        <div><dt>(*label)</dt><dd>(value.as_str())</dd></div>
+                    }
+                </dl>
+            )
+            panel(
+                title: "library scan",
+                <p class="muted" data-live="scan">
+                    if board.scan.scanning { "scanning, " (board.scan.count) " songs so far" }
+                    else {
+                        (board.scan.count) " songs"
+                        match board.scan.last_scan {
+                            Some(t) => { ", last scan " (ago(t, board.tz)) },
+                            None => "",
+                        }
+                    }
+                </p>
+                <form method="post" action="/admin/scan">
+                    check(name: "full", label: "full rescan")
+                    <button>"start scan"</button>
+                </form>
+            )
         )
     })
 }
@@ -708,21 +856,16 @@ async fn member_row(member: &data::Member, me: &str) -> Result<impl View> {
                 <small>(member.plays) " plays"</small>
             </summary>
             <div class="fold">
-                <form method="post" action="/admin/users/update" class="form">
+                <form method="post" action="/admin/users/update">
                     <input type="hidden" name="username" value=(user.name.as_str())>
                     <div class="roles">
-                        for (field, label, on) in flags(user) {
-                            <label class="check">
-                                <input type="checkbox" name=(field) checked=(on) disabled=(own && field == "admin")>
-                                (label)
-                            </label>
+                        for (role, label, on) in flags(user) {
+                            check(name: role, label: label, checked: on, disabled: own && role == "admin")
                         }
                     </div>
                     if own { <input type="hidden" name="admin" value="on"> }
-                    <div class="row">
-                        <input name="password" type="password" placeholder="new password (optional)" autocomplete="new-password">
-                        <button>"save"</button>
-                    </div>
+                    field(label: "new password (optional)", name: "password", kind: "password", auto: "new-password")
+                    <button>"save"</button>
                 </form>
                 if !own {
                     <form method="post" action="/admin/users/delete">
