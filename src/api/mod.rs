@@ -291,6 +291,10 @@ pub fn router(st: AppState) -> Router {
             .route(&format!("/rest/{name}"), handler.clone())
             .route(&format!("/rest/{name}.view"), handler);
     }
+    let web = crate::web::service(st.clone());
+    for path in crate::web::PATHS {
+        r = r.route_service(path, web.clone());
+    }
     r.route("/share/{id}", axum::routing::get(social::public_share))
         .route(
             "/share/{id}/stream/{song}",

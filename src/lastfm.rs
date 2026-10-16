@@ -124,6 +124,11 @@ impl Client {
         format!("{}?api_key={}&token={token}", self.auth_url, self.key)
     }
 
+    pub fn web_auth_link(&self, callback: &str) -> String {
+        let cb: String = form_urlencoded::byte_serialize(callback.as_bytes()).collect();
+        format!("{}?api_key={}&cb={cb}", self.auth_url, self.key)
+    }
+
     pub fn session(&self, token: &str) -> Result<(String, String)> {
         let body = self.call("auth.getSession", &[("token", token.to_string())], false)?;
         let key = body["session"]["key"].as_str();

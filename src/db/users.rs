@@ -173,6 +173,29 @@ pub fn set_password(
     Ok(())
 }
 
+pub fn rename(conn: &Connection, id: &str, name: &str) -> Result<bool, ApiError> {
+    if name.trim().is_empty() {
+        return Err(ApiError::bad_param("username"));
+    }
+    if let Some(other) = by_name(conn, name)?
+        && other.id != id
+    {
+        return Ok(false);
+    }
+    match conn.execute(
+        "UPDATE users SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    ) {
+        Ok(_) => Ok(true),
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub fn set_token_secret(conn: &Connection, id: &str, secret: &[u8]) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE users SET token_secret = ?1 WHERE id = ?2",
@@ -280,4 +303,56 @@ pub fn set_lastfm(
         params![user_id, blob, name],
     )?;
     Ok(())
+}
+
+pub fn by_session(
+    conn: &Connection,
+    token_hash: &[u8],
+    now: i64,
+) -> rusqlite::Result<Option<User>> {
+    conn.query_row(
+        &format!(
+            "SELECT {COLS} FROM users WHERE id = \
+             (SELECT user_id FROM web_sessions WHERE token_hash = ?1 AND expires_at > ?2)"
+        ),
+        params![token_hash, now],
+        map,
+    )
+    .optional()
+}
+
+pub fn create_session(
+    conn: &Connection,
+    token_hash: &[u8],
+    user_id: &str,
+    expires_at: i64,
+) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM web_sessions WHERE expires_at <= ?1", [now()])?;
+    conn.execute(
+        "INSERT OR REPLACE INTO web_sessions(token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![token_hash, user_id, expires_at],
+    )?;
+    Ok(())
+}
+
+pub fn delete_session(conn: &Connection, token_hash: &[u8]) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM web_sessions WHERE token_hash = ?1",
+        [token_hash],
+    )
+}
+
+pub fn delete_sessions_except(
+    conn: &Connection,
+    user_id: &str,
+    keep: &[u8],
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM web_sessions WHERE user_id = ?1 AND token_hash <> ?2",
+        params![user_id, keep],
+    )
+}
+
+pub fn delete_sessions(conn: &Connection, user_id: &str) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM web_sessions WHERE user_id = ?1", [user_id])
 }

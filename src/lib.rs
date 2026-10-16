@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod ids;
 pub mod lastfm;
+pub mod live;
 pub mod lyrics;
 pub mod omm;
 pub mod params;
@@ -15,6 +16,9 @@ pub mod state;
 pub mod transcode;
 pub mod upload;
 pub mod util;
+
+#[path = "../web/mod.rs"]
+pub mod web;
 
 use std::sync::Arc;
 
@@ -89,7 +93,8 @@ pub fn init(cfg: Config) -> Result<Server> {
 
     clean_stale_uploads(&db);
 
-    let scanner = Scanner::new(db.clone());
+    let live = live::Live::new();
+    let scanner = Scanner::new(db.clone(), live.clone());
     if cfg.scan.on_start {
         scanner.start(false);
     }
@@ -152,6 +157,7 @@ pub fn init(cfg: Config) -> Result<Server> {
         )),
         upload_lock: Default::default(),
         now_playing: Default::default(),
+        live,
     };
     Ok(Server {
         state,

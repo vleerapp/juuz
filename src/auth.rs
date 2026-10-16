@@ -69,6 +69,15 @@ pub fn hash_password(password: &str) -> Result<String> {
         .map_err(|e| anyhow!("hashing password: {e}"))
 }
 
+pub async fn credentials(crypto: &Crypto, password: &str) -> Result<(String, Vec<u8>), ApiError> {
+    let sealed = crypto.seal(password.as_bytes());
+    let password = password.to_string();
+    let hash = tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|_| ApiError::generic("internal server error"))??;
+    Ok((hash, sealed))
+}
+
 pub fn verify_password(hash: &str, password: &str) -> bool {
     match PasswordHash::new(hash) {
         Ok(parsed) => Argon2::default()

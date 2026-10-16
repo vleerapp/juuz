@@ -15,6 +15,7 @@ use walkdir::WalkDir;
 
 use crate::db::{Db, now, now_ms};
 use crate::error::ApiError;
+use crate::live::Live;
 use index::FolderCtx;
 use tags::{TrackInfo, is_audio, read_track};
 
@@ -26,6 +27,7 @@ pub struct Scanner {
     running: Arc<AtomicBool>,
     count: Arc<AtomicU64>,
     index_lock: Arc<Mutex<()>>,
+    live: Live,
 }
 
 #[derive(Debug, Clone)]
@@ -84,9 +86,10 @@ fn walk(root: &Path) -> Vec<Walked> {
 }
 
 impl Scanner {
-    pub fn new(db: Db) -> Scanner {
+    pub fn new(db: Db, live: Live) -> Scanner {
         Scanner {
             db,
+            live,
             running: Arc::new(AtomicBool::new(false)),
             count: Arc::new(AtomicU64::new(0)),
             index_lock: Arc::new(Mutex::new(())),
@@ -139,8 +142,10 @@ impl Scanner {
         {
             return Ok(None);
         }
+        self.live.notify();
         let result = self.run_scan(full);
         self.running.store(false, Ordering::Release);
+        self.live.notify();
         result.map(Some)
     }
 
@@ -223,6 +228,7 @@ impl Scanner {
                 moves.extend(outcome.album_moves);
                 summary.scanned += tracks.len() as u64;
                 self.count.fetch_add(chunk.len() as u64, Ordering::AcqRel);
+                self.live.notify();
             }
             index::finalize_albums(&mut conn, &albums, &moves)?;
             summary.pruned += index::prune_folder(&mut conn, folder_id, generation, scan_start)?;
@@ -267,6 +273,7 @@ impl Scanner {
         })?;
         let outcome = index::upsert_tracks(&mut conn, &ctx, &[track])?;
         index::finalize_albums(&mut conn, &outcome.albums, &outcome.album_moves)?;
+        self.live.notify();
         outcome
             .song_ids
             .into_iter()
@@ -328,6 +335,7 @@ impl Scanner {
         }
         tx.commit()?;
         index::prune_entities(&mut conn)?;
+        self.live.notify();
         if purge_user_rows {
             index::prune_user_rows(&mut conn)?;
         }

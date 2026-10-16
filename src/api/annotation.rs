@@ -129,6 +129,7 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
                     started: now(),
                 },
             );
+        ctx.st.live.notify();
         return empty();
     }
 
@@ -168,6 +169,7 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&user.id);
+    ctx.st.live.notify();
     empty()
 }
 

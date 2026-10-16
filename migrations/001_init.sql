@@ -211,6 +211,15 @@ CREATE TABLE scrobbles (
     song_id TEXT NOT NULL,
     played_at INTEGER NOT NULL
 );
+CREATE INDEX scrobbles_user_played ON scrobbles(user_id, played_at);
+CREATE INDEX scrobbles_song ON scrobbles(song_id);
+
+CREATE TABLE web_sessions (
+    token_hash BLOB PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX web_sessions_user ON web_sessions(user_id);
 
 CREATE TABLE playlists (
     id TEXT PRIMARY KEY,

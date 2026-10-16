@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::auth::Crypto;
 use crate::config::Config;
 use crate::db::Db;
+use crate::live::Live;
 use crate::omm;
 use crate::scanner::Scanner;
 
@@ -30,4 +31,5 @@ pub struct AppState {
     pub transcode_slots: Arc<tokio::sync::Semaphore>,
     pub upload_lock: Arc<tokio::sync::Mutex<()>>,
     pub now_playing: Arc<Mutex<HashMap<String, NowPlaying>>>,
+    pub live: Live,
 }

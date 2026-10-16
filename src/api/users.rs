@@ -80,13 +80,7 @@ pub async fn create_user(ctx: Ctx) -> ApiResult {
     let password = decode(ctx.params.req("password")?)?;
     let roles = roles_from(&ctx.params);
 
-    let hash = {
-        let password = password.clone();
-        tokio::task::spawn_blocking(move || auth::hash_password(&password))
-            .await
-            .map_err(|_| ApiError::generic("internal server error"))??
-    };
-    let secret = ctx.st.crypto.seal(password.as_bytes());
+    let (hash, secret) = auth::credentials(&ctx.st.crypto, &password).await?;
 
     ctx.st
         .db
@@ -106,14 +100,7 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
     let new_password = ctx.params.get("password").map(decode).transpose()?;
 
     let credentials = match &new_password {
-        Some(pw) => {
-            let sealed = ctx.st.crypto.seal(pw.as_bytes());
-            let pw = pw.clone();
-            let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pw))
-                .await
-                .map_err(|_| ApiError::generic("internal server error"))??;
-            Some((hash, sealed))
-        }
+        Some(pw) => Some(auth::credentials(&ctx.st.crypto, pw).await?),
         None => None,
     };
 
@@ -125,6 +112,7 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
             users::update_roles(c, &user.id, &roles)?;
             if let Some((hash, sealed)) = credentials {
                 users::set_password(c, &user.id, &hash, Some(&sealed))?;
+                users::delete_sessions(c, &user.id)?;
             }
             Ok(())
         })
@@ -155,18 +143,13 @@ pub async fn change_password(ctx: Ctx) -> ApiResult {
         ));
     }
     let password = decode(ctx.params.req("password")?)?;
-    let hash = {
-        let password = password.clone();
-        tokio::task::spawn_blocking(move || auth::hash_password(&password))
-            .await
-            .map_err(|_| ApiError::generic("internal server error"))??
-    };
-    let sealed = ctx.st.crypto.seal(password.as_bytes());
+    let (hash, sealed) = auth::credentials(&ctx.st.crypto, &password).await?;
     ctx.st
         .db
         .run(move |c| {
             let user = users::by_name(c, &name)?.ok_or_else(|| ApiError::not_found("user"))?;
             users::set_password(c, &user.id, &hash, Some(&sealed))?;
+            users::delete_sessions(c, &user.id)?;
             Ok(())
         })
         .await?;

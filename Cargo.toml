@@ -3,7 +3,7 @@ name = "juuz"
 description = "An OpenSubsonic server written in Rust that you can also upload to."
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.99"
 authors = ["PandaDEV <hello@pandadev.net>"]
 homepage = "https://vleer.app"
 repository = "https://github.com/vleerapp/juuz"
@@ -11,7 +11,7 @@ readme = "README.md"
 license = "AGPL-3.0"
 keywords = ["opensubsonic", "subsonic", "music", "server", "streaming"]
 categories = ["multimedia::audio"]
-exclude = ["/bruno", "/.dev", "/data", "/music"]
+exclude = ["/data", "/music"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -47,6 +47,7 @@ serde_json = "1.0.154"
 sha2 = "0.11.1"
 symphonia = { version = "0.6.1", features = ["all"] }
 tokio = { version = "1.53.3", features = ["full"] }
+topcoat = { version = "0.10.0", default-features = false, features = ["anyhow", "cookie", "router", "session", "tower", "view", "websocket"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = ["trace", "cors", "fs"] }
 tracing = "0.1.44"
@@ -56,6 +57,8 @@ walkdir = "2.5.0"
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 
 [dev-dependencies]
+futures-util = { version = "0.3.31", default-features = false, features = ["sink"] }
+tokio-tungstenite = "0.29.0"
 tempfile = "3.27.0"
 hound = "3.5.1"
 
