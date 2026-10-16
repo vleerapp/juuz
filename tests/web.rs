@@ -404,14 +404,15 @@ async fn stats_reflect_plays() {
     let found = h.ok("search3", "query=Uniquetitle").await;
     let id = found["searchResult3"]["song"][0]["id"].as_str().unwrap();
     h.ok("scrobble", &format!("id={id}")).await;
-    h.ok("scrobble", &format!("id={id}")).await;
+    h.ok("scrobble", &format!("id={id}&time=1000000000000"))
+        .await;
 
     let session = login(&h, USER, PASS).await;
     let dash = page(&h, "/?range=all", Some(&session)).await.text();
     assert!(dash.contains("Uniquetitle"));
     assert!(dash.contains("Stat Band"));
     assert!(dash.contains("Stat Album"));
-    assert!(dash.contains("<b>2</b>"));
+    assert!(dash.contains("<span class=\"count\">2</span>"));
 
     h.ok("createUser", "username=dave&password=davepw").await;
     let dave = login(&h, "dave", "davepw").await;
@@ -559,6 +560,8 @@ async fn live_regions_and_events_need_a_session() {
     assert!(dash.contains("data-live=\"stats\""));
     let server = page(&h, "/admin/server", Some(&session)).await.text();
     assert!(server.contains("data-live=\"scan\""));
+    assert!(server.contains("jukebox output"));
+    assert!(server.contains("none selected"));
 }
 
 async fn connect(
@@ -634,7 +637,7 @@ async fn chart_days_follow_the_browser_timezone() {
         let html = page(&h, "/", Some(&cookies)).await.text();
         let from = html.find("class=\"chart\"").unwrap();
         let chart = &html[from..];
-        let at = chart.rfind("class=\"d\">").unwrap();
+        let at = chart.rfind("class=\"date\">").unwrap();
         chart[at + 9..].split('<').next().unwrap().to_string()
     };
     let east = last_label("840").await;

@@ -22,10 +22,12 @@ pub enum Notice {
     SelfProtected,
     ScanStarted,
     ScanBusy,
+    JukeboxScanned,
+    JukeboxFailed,
 }
 
 impl Notice {
-    const EACH: [Notice; 18] = [
+    const EACH: [Notice; 20] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -44,6 +46,8 @@ impl Notice {
         Notice::SelfProtected,
         Notice::ScanStarted,
         Notice::ScanBusy,
+        Notice::JukeboxScanned,
+        Notice::JukeboxFailed,
     ];
 
     pub fn code(self) -> &'static str {
@@ -66,6 +70,8 @@ impl Notice {
             Notice::SelfProtected => "self-protected",
             Notice::ScanStarted => "scan-started",
             Notice::ScanBusy => "scan-busy",
+            Notice::JukeboxScanned => "jukebox-scanned",
+            Notice::JukeboxFailed => "jukebox-failed",
         }
     }
 
@@ -93,6 +99,8 @@ impl Notice {
             Notice::SelfProtected => "you cannot demote or delete your own account",
             Notice::ScanStarted => "scan started",
             Notice::ScanBusy => "a scan is already running",
+            Notice::JukeboxScanned => "renderer scan finished",
+            Notice::JukeboxFailed => "could not use that renderer",
         }
     }
 
@@ -108,6 +116,7 @@ impl Notice {
                 | Notice::UserExists
                 | Notice::SelfProtected
                 | Notice::ScanBusy
+                | Notice::JukeboxFailed
         )
     }
 }

@@ -77,6 +77,11 @@
       setTimeout(() => delete el.dataset.copied, 1500);
     };
 
+    document.addEventListener("click", (e) => {
+      const el = e.target.closest?.("[data-copy]");
+      if (el) copy(el);
+    });
+
     const typing = (el) => !!el && el.matches(TEXT);
 
     const columnOf = (el) => {
@@ -112,7 +117,7 @@
       if (!list.includes(document.activeElement)) {
         const start =
           (anchor && list.includes(anchor) ? anchor : null) ||
-          document.querySelector(".tabs a.on") ||
+          document.querySelector(".tabs a.current") ||
           list[0];
         if (!start) return;
         start.focus();
@@ -176,7 +181,7 @@
 
     const jump = (step) => {
       const links = [...document.querySelectorAll(".tabs a")];
-      const at = links.findIndex((a) => a.classList.contains("on"));
+      const at = links.findIndex((a) => a.classList.contains("current"));
       if (at < 0) return;
       links[(at + step + links.length) % links.length].click();
     };
@@ -258,7 +263,7 @@
         caret.hidden = true;
         screen.appendChild(caret);
       }
-      root.classList.add("fake-caret");
+      root.setAttribute("data-caret", "");
       if (!typing(el)) {
         caret.hidden = true;
         return;

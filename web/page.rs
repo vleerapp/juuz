@@ -35,6 +35,13 @@ struct Scan {
 }
 
 #[derive(Clone)]
+struct Filters {
+    range: Range,
+    everyone: bool,
+    admin: bool,
+}
+
+#[derive(Clone)]
 struct StatsBoard {
     me: User,
     range: Range,
@@ -64,6 +71,7 @@ struct ServerBoard {
     me: User,
     scan: Scan,
     config: Vec<(&'static str, String)>,
+    jukebox: crate::jukebox::Outputs,
     tz: i64,
 }
 
@@ -125,12 +133,10 @@ async fn stats_board(cx: &Cx, me: User, range: Range, everyone: bool) -> Result<
     let everyone = everyone && me.admin;
     let scope = (!everyone).then(|| me.id.clone());
     let entries: Vec<(String, String, String)> = st
-        .now_playing
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .filter(|(uid, _)| scope.as_deref().is_none_or(|s| s == uid.as_str()))
-        .map(|(_, n)| (n.song_id.clone(), n.username.clone(), n.player.clone()))
+        .playing_now()
+        .into_iter()
+        .filter(|n| scope.as_deref().is_none_or(|s| s == n.user_id))
+        .map(|n| (n.song_id, n.username, n.player))
         .collect();
     let (stats, playing) = st
         .db
@@ -314,6 +320,7 @@ async fn server_page(cx: &Cx) -> Result<impl View> {
             last_scan: status.last_scan,
         },
         config: config_rows(cx),
+        jukebox: state(cx).jukebox.outputs().await,
         tz: timezone(cx),
     };
     Ok(view! { server_view(board: board, notice: notice) })
@@ -436,7 +443,7 @@ async fn jump(
         plain
     };
     Ok(view! {
-        <a (attrs) data-key=(key) class=(class!("link", "on" if on))>(label)</a>
+        <a (attrs) data-key=(key) class=(class!("link", "current" if on))>(label)</a>
     })
 }
 
@@ -456,32 +463,58 @@ async fn shell(
     name: &str,
     admin: bool,
     notice: Option<Notice>,
+    #[default] filters: Option<Filters>,
     #[default] child: Child<'_>,
 ) -> Result<impl View> {
     let authed = !name.is_empty();
     Ok(view! {
-        <div class="screen">
+        <div class=(class!("screen", "guest" if !authed))>
             <header>
                 <h1>"juuz"</h1>
                 if authed {
-                    <div class="who">
+                    <div class="session">
                         <span>(name)</span>
                         <form method="post" action="/logout"><button class="ghost">"sign out"</button></form>
                     </div>
                 }
             </header>
             if authed {
-                <nav class="tabs" aria-label="pages">
-                    for entry in Page::EACH {
-                        if admin || !entry.admin() {
-                            jump(href: entry.path().to_string(), label: entry.label(), key: entry.key().to_string(), on: Some(entry) == page)
+                <div class="bar">
+                    <nav class="tabs" aria-label="pages">
+                        for entry in Page::EACH {
+                            if admin || !entry.admin() {
+                                jump(href: entry.path().to_string(), label: entry.label(), key: entry.key().to_string(), on: Some(entry) == page)
+                            }
                         }
+                    </nav>
+                    match filters {
+                        Some(filters) => filter_bar(filters: filters),
+                        None => "",
                     }
-                </nav>
+                </div>
             }
             banner(notice: notice)
             <main>(child)</main>
         </div>
+    })
+}
+
+#[component]
+async fn filter_bar(filters: Filters) -> Result<impl View> {
+    Ok(view! {
+        <nav class="filters" aria-label="filters">
+            <div class="group" role="group" aria-label="range">
+                for range in Range::EACH {
+                    jump(href: view_link(range, filters.everyone), label: range.label(), on: range == filters.range)
+                }
+            </div>
+            if filters.admin {
+                <div class="group" role="group" aria-label="view">
+                    jump(href: view_link(filters.range, false), label: "just me", on: !filters.everyone)
+                    jump(href: view_link(filters.range, true), label: "everyone", on: filters.everyone)
+                </div>
+            }
+        </nav>
     })
 }
 
@@ -515,7 +548,7 @@ async fn field(
 ) -> Result<impl View> {
     Ok(view! {
         <label>
-            <span class="lbl">(label)</span>
+            <span class="caption">(label)</span>
             <input name=(name) type=(kind) autocomplete=(auto) value=(value) inputmode=(mode) required=(required) autofocus=(focus)>
         </label>
     })
@@ -545,7 +578,6 @@ async fn login_page(notice: Option<Notice>) -> Result<impl View> {
             admin: false,
             notice: notice,
             panel(
-                    title: "sign in",
                     <form method="post" action="/login">
                         field(label: "username", name: "username", kind: "text", auto: "username", required: true, focus: true)
                         field(label: "password", name: "password", kind: "password", auto: "current-password", required: true)
@@ -560,25 +592,18 @@ async fn login_page(notice: Option<Notice>) -> Result<impl View> {
 async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl View> {
     let top = board.stats.days.iter().map(|d| d.plays).max().unwrap_or(0);
     let chart_title = format!("plays per {}", board.range.unit());
+    let filters = Some(Filters {
+        range: board.range,
+        everyone: board.everyone,
+        admin: board.me.admin,
+    });
     Ok(view! {
         shell(
             page: Some(Page::Stats),
             name: board.me.name.as_str(),
             admin: board.me.admin,
             notice: notice,
-            <nav class="filters" aria-label="filters">
-                <div class="group" role="group" aria-label="range">
-                    for range in Range::EACH {
-                        jump(href: view_link(range, board.everyone), label: range.label(), on: range == board.range)
-                    }
-                </div>
-                if board.me.admin {
-                    <div class="group" role="group" aria-label="view">
-                        jump(href: view_link(board.range, false), label: "just me", on: !board.everyone)
-                        jump(href: view_link(board.range, true), label: "everyone", on: board.everyone)
-                    </div>
-                }
-            </nav>
+            filters: filters,
             <div class="live" data-live="stats">
                 panel(
                     title: "overview",
@@ -602,8 +627,8 @@ async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl Vi
                                                 <ul>
                             for item in board.playing.iter() {
                                 <li>
-                                    <span class="t">(item.title.as_str()) <small>(item.artist.as_str())</small></span>
-                                    <span class="r">(item.user.as_str()) " · " (item.player.as_str())</span>
+                                    <span class="title">(item.title.as_str()) <small>(item.artist.as_str())</small></span>
+                                    <span class="detail">(item.user.as_str()) " · " (item.player.as_str())</span>
                                 </li>
                             }
                         </ul>
@@ -615,9 +640,9 @@ async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl Vi
                     <div class="chart" role="img" aria-label=(chart_title.as_str())>
                         for day in board.stats.days.iter() {
                             <div class="day">
-                                <span class="d">(day.label.as_str())</span>
+                                <span class="date">(day.label.as_str())</span>
                                 <span class="bar">(bar(day.plays, top))</span>
-                                <b>(day.plays)</b>
+                                <span class="count">(day.plays)</span>
                             </div>
                         }
                     </div>
@@ -649,10 +674,10 @@ async fn ranked_list(title: &str, items: &[Ranked]) -> Result<impl View> {
                 <ol>
                     for item in items.iter() {
                         <li>
-                            <span class="t">(item.name.as_str())
+                            <span class="title">(item.name.as_str())
                                 if !item.sub.is_empty() { <small>(item.sub.as_str())</small> }
                             </span>
-                            <b>(item.plays)</b>
+                            <span class="count">(item.plays)</span>
                         </li>
                     }
                 </ol>
@@ -672,8 +697,8 @@ async fn recent_list(items: &[Recent], everyone: bool, tz: i64) -> Result<impl V
                 <ul>
                     for item in items.iter() {
                         <li>
-                            <span class="t">(item.title.as_str()) <small>(item.artist.as_str())</small></span>
-                            <span class="r">
+                            <span class="title">(item.title.as_str()) <small>(item.artist.as_str())</small></span>
+                            <span class="detail">
                                 if everyone { (item.user.as_str()) " · " }
                                 (ago(item.played_at, tz))
                             </span>
@@ -744,7 +769,7 @@ async fn keys_view(board: KeysBoard, notice: Option<Notice>) -> Result<impl View
                                 wide: true,
                                 match &board.reveal {
                     Reveal::Key { name, key } => <div class="reveal">
-                        <p class="lbl">"new key: " (name.as_str()) " (shown once, copy it now)"</p>
+                        <p class="caption">"new key: " (name.as_str()) " (shown once, copy it now)"</p>
                         <code data-copy="" tabindex="0" class="secret">(key.as_str())</code>
                     </div>,
                     Reveal::None => "",
@@ -755,7 +780,7 @@ async fn keys_view(board: KeysBoard, notice: Option<Notice>) -> Result<impl View
                     <ul>
                         for key in board.account.keys.iter() {
                             <li>
-                                <span class="t">
+                                <span class="title">
                                     (if key.name.is_empty() { "unnamed" } else { key.name.as_str() })
                                     <small>(ago(key.created, board.tz))</small>
                                 </span>
@@ -773,7 +798,7 @@ async fn keys_view(board: KeysBoard, notice: Option<Notice>) -> Result<impl View
                                 wide: true,
                                 <form method="post" action="/account/apikeys">
                     <label>
-                        <span class="lbl">"label"</span>
+                        <span class="caption">"label"</span>
                         <input name="name" maxlength="80" autocomplete="off">
                     </label>
                     <button>"create key"</button>
@@ -848,6 +873,37 @@ async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl 
                     check(name: "full", label: "full rescan")
                     <button>"start scan"</button>
                 </form>
+            )
+            panel(
+                title: "jukebox output",
+                note: "dlna renderer",
+                <p class="muted" data-live="jukebox">
+                    match &board.jukebox.current {
+                        Some((device, online)) => {
+                            (device.name.as_str())
+                            if !*online { ", offline" }
+                        },
+                        None => "none selected",
+                    }
+                </p>
+                for device in board.jukebox.devices.iter() {
+                    <form method="post" action="/admin/jukebox/select">
+                        <input type="hidden" name="id" value=(device.udn.as_str())>
+                        <button>"use " (device.name.as_str())</button>
+                    </form>
+                }
+                <form method="post" action="/admin/jukebox/scan">
+                    <button>"scan network"</button>
+                </form>
+                <form method="post" action="/admin/jukebox/select">
+                    field(label: "device description url", name: "url", kind: "url", auto: "off")
+                    <button>"use url"</button>
+                </form>
+                if board.jukebox.current.is_some() {
+                    <form method="post" action="/admin/jukebox/select">
+                        <button class="ghost danger">"clear output"</button>
+                    </form>
+                }
             )
         )
     })

@@ -373,6 +373,37 @@ async fn scan(cx: &Cx, Form(form): Form<ScanForm>) -> Result<SeeOther> {
     ))
 }
 
+#[derive(Deserialize)]
+struct OutputForm {
+    id: Option<String>,
+    url: Option<String>,
+}
+
+#[route(POST "/admin/jukebox/select")]
+async fn jukebox_select(cx: &Cx, Form(form): Form<OutputForm>) -> Result<SeeOther> {
+    require_admin(cx).await?;
+    let id = form.id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let url = form.url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let notice = match state(cx).jukebox.select(id, url).await {
+        Ok(()) => Notice::Saved,
+        Err(e) => {
+            tracing::warn!("selecting jukebox output: {e}");
+            Notice::JukeboxFailed
+        }
+    };
+    Ok(back(Page::Server, notice))
+}
+
+#[route(POST "/admin/jukebox/scan")]
+async fn jukebox_scan(cx: &Cx) -> Result<SeeOther> {
+    require_admin(cx).await?;
+    let notice = match state(cx).jukebox.scan().await {
+        Ok(_) => Notice::JukeboxScanned,
+        Err(_) => Notice::JukeboxFailed,
+    };
+    Ok(back(Page::Server, notice))
+}
+
 pub fn routes(b: RouterBuilder) -> RouterBuilder {
     b.route(profile)
         .route(password)
@@ -384,4 +415,6 @@ pub fn routes(b: RouterBuilder) -> RouterBuilder {
         .route(update_user)
         .route(delete_user)
         .route(scan)
+        .route(jukebox_select)
+        .route(jukebox_scan)
 }
