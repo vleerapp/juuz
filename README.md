@@ -22,6 +22,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 - Live SQLite library that watches the music folders
 - Opus, MP3 and AAC transcoding (`format=opus`, `mp3`, `aac`) in pure Rust, no ffmpeg
 - Podcasts, shares, internet radio, play queue, bookmarks
+- Jukebox: the server plays to a DLNA speaker and any `jukeboxControl` app (Feishin) acts as the remote
 - **[Web UI](#web-ui)**: a keyboard-driven terminal-style interface for stats, account settings and user management
 
 ## Installation
