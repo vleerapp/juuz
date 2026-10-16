@@ -3014,10 +3014,12 @@ dependencies = [
  "topcoat-core",
  "topcoat-core-macro",
  "topcoat-font",
+ "topcoat-font-macro",
  "topcoat-mail",
  "topcoat-router",
  "topcoat-router-macro",
  "topcoat-runtime",
+ "topcoat-runtime-macro",
  "topcoat-session",
  "topcoat-view",
  "topcoat-view-macro",
@@ -3113,6 +3115,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "topcoat-font-grammar"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c962dddbbf22479c3a65cae250fdd6fc30b28c1d67eba0f2284f7848d204e9f3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "topcoat-core-grammar",
+ "topcoat-font",
+]
+
+[[package]]
+name = "topcoat-font-macro"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9d7f98899e3ad0ed2d008c175a28880e4e4158cf92fce04ca2f2715d7f1241c"
+dependencies = [
+ "quote",
+ "syn 3.0.9",
+ "topcoat-font-grammar",
+]
+
+[[package]]
 name = "topcoat-mail"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3200,6 +3226,33 @@ dependencies = [
  "topcoat-router",
  "topcoat-view",
  "topcoat-view-macro",
+]
+
+[[package]]
+name = "topcoat-runtime-grammar"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c06ec39c3d5d030d3682ecb1e065db908ec83b85e8a813d1d907ca483a24394c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 3.0.9",
+ "topcoat-core-grammar",
+ "topcoat-router",
+ "topcoat-runtime",
+]
+
+[[package]]
+name = "topcoat-runtime-macro"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8aac99e8ff2cf5cd11b010048515fe5a4e5b7e5feefe6c55f30795b778a90eb"
+dependencies = [
+ "quote",
+ "syn 3.0.9",
+ "topcoat-runtime-grammar",
 ]
 
 [[package]]
