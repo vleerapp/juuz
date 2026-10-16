@@ -8,8 +8,10 @@ mod page;
 
 use std::time::Duration;
 
+use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::cookie::{Cookie, Cookies, RouterBuilderCookieExt, SameSite, cookies};
 use topcoat::router::{Router, tower::TowerService};
+use topcoat::runtime::RouterBuilderRuntimeExt;
 use topcoat::session::{
     RouterBuilderSessionExt, SessionConfig, Token, TokenStore, TokenStoreFuture,
 };
@@ -71,8 +73,8 @@ pub const PATHS: [&str; 12] = [
     "/logout",
     "/juuz.css",
     "/departure-mono.woff2",
-    "/live.js",
-    "/term.js",
+    "/client.js",
+    "/_topcoat/{*rest}",
     "/events",
     "/account/{*rest}",
     "/admin/{*rest}",
@@ -84,7 +86,7 @@ pub fn service(st: AppState) -> TowerService {
     let builder = page::routes(actions::routes(live::routes(auth::routes(
         Router::builder(),
     ))));
-    let router = builder
+    let builder = builder
         .cookies()
         .sessions(
             SessionConfig::builder()
@@ -92,7 +94,13 @@ pub fn service(st: AppState) -> TowerService {
                 .lifetime(LIFETIME)
                 .build(),
         )
-        .app_context(st)
-        .build();
-    TowerService::new(router)
+        .app_context(st);
+    let builder = match AssetBundle::load() {
+        Ok(bundle) => builder.assets(bundle).runtime(),
+        Err(e) => {
+            tracing::warn!("topcoat asset bundle not found, client-side navigation is off: {e}");
+            builder
+        }
+    };
+    TowerService::new(builder.build())
 }

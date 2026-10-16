@@ -1,3 +1,13 @@
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 0s;
+}
+
 @font-face {
   font-family: "Departure Mono";
   src: url("/departure-mono.woff2") format("woff2");

@@ -1,10 +1,12 @@
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
+use topcoat::context::try_app_context;
 use topcoat::cookie::{Cookies, cookies};
 use topcoat::router::content::Form;
 use topcoat::router::{HeaderName, HeaderValue, Slot, header, layout, page, query_params, route};
-use topcoat::view::{Child, View, class, component, view};
+use topcoat::runtime::{RuntimeSetup, link_attrs, prefetch_mode};
+use topcoat::view::{Attributes, Child, View, class, component, view};
 
 use super::auth::{current, fail, require, require_admin, state};
 use super::data::{self, Account, Admin, Playing, Range, Ranked, Recent, Stats};
@@ -15,8 +17,7 @@ use crate::db::users::{self, User};
 
 const STYLE: &str = include_str!("style.css");
 const FONT: &[u8] = include_bytes!("DepartureMono.woff2");
-const LIVE: &str = include_str!("live.js");
-const TERM: &str = include_str!("term.js");
+const CLIENT: &str = include_str!("client.js");
 const BAR_WIDTH: i64 = 40;
 const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
@@ -196,31 +197,20 @@ async fn font() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
     ))
 }
 
-#[route(GET "/live.js")]
-async fn live_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+#[route(GET "/client.js")]
+async fn client_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
         [
             (
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("text/javascript; charset=utf-8"),
             ),
-            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-        ],
-        LIVE,
-    ))
-}
-
-#[route(GET "/term.js")]
-async fn term_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
-    Ok((
-        [
             (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/javascript; charset=utf-8"),
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=86400"),
             ),
-            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
         ],
-        TERM,
+        CLIENT,
     ))
 }
 
@@ -228,8 +218,16 @@ fn style_version() -> u64 {
     xxhash_rust::xxh3::xxh3_64(STYLE.as_bytes())
 }
 
+fn client_version() -> u64 {
+    xxhash_rust::xxh3::xxh3_64(CLIENT.as_bytes())
+}
+
+fn runtime_on(cx: &Cx) -> bool {
+    try_app_context::<RuntimeSetup>(cx).is_some()
+}
+
 #[layout("/")]
-async fn frame(slot: Slot<'_>) -> Result<impl View> {
+async fn frame(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
     Ok(view! {
         <!DOCTYPE html>
         <html lang="en">
@@ -240,6 +238,8 @@ async fn frame(slot: Slot<'_>) -> Result<impl View> {
                 <title>"juuz"</title>
                 <link rel="preload" href="/departure-mono.woff2" as="font" type="font/woff2" crossorigin="">
                 <link rel="stylesheet" href=(format!("/juuz.css?v={:x}", style_version()))>
+                <script src=(format!("/client.js?v={:x}", client_version()))></script>
+                if runtime_on(cx) { topcoat::runtime::script() }
             </head>
             <body>(slot)</body>
         </html>
@@ -350,8 +350,7 @@ pub fn routes(b: topcoat::router::RouterBuilder) -> topcoat::router::RouterBuild
         .page(create_key)
         .route(stylesheet)
         .route(font)
-        .route(live_script)
-        .route(term_script)
+        .route(client_script)
 }
 
 fn duration(ms: i64) -> String {
@@ -422,6 +421,26 @@ fn view_link(range: Range, everyone: bool) -> String {
 }
 
 #[component]
+async fn jump(
+    cx: &Cx,
+    href: String,
+    label: &str,
+    #[default] key: String,
+    #[default] on: bool,
+) -> Result<impl View> {
+    let attrs = if runtime_on(cx) {
+        link_attrs(cx, href, prefetch_mode(cx))
+    } else {
+        let mut plain = Attributes::with_capacity(1);
+        plain.insert(cx, "href", href);
+        plain
+    };
+    Ok(view! {
+        <a (attrs) data-key=(key) class=(class!("link", "on" if on))>(label)</a>
+    })
+}
+
+#[component]
 async fn banner(notice: Option<Notice>) -> Result<impl View> {
     Ok(view! {
         match notice {
@@ -455,11 +474,7 @@ async fn shell(
                 <nav class="tabs" aria-label="pages">
                     for entry in Page::EACH {
                         if admin || !entry.admin() {
-                            <a
-                                href=(entry.path())
-                                data-key=(entry.key().to_string())
-                                class=(class!("tab", "on" if Some(entry) == page))
-                            >(entry.label())</a>
+                            jump(href: entry.path().to_string(), label: entry.label(), key: entry.key().to_string(), on: Some(entry) == page)
                         }
                     }
                 </nav>
@@ -467,8 +482,6 @@ async fn shell(
             banner(notice: notice)
             <main>(child)</main>
         </div>
-        if authed { <script src="/live.js" defer=""></script> }
-        <script src="/term.js"></script>
     })
 }
 
@@ -556,16 +569,13 @@ async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl Vi
             <nav class="filters" aria-label="filters">
                 <div class="group" role="group" aria-label="range">
                     for range in Range::EACH {
-                        <a
-                            href=(view_link(range, board.everyone))
-                            class=(class!("chip", "on" if range == board.range))
-                        >(range.label())</a>
+                        jump(href: view_link(range, board.everyone), label: range.label(), on: range == board.range)
                     }
                 </div>
                 if board.me.admin {
                     <div class="group" role="group" aria-label="view">
-                        <a href=(view_link(board.range, false)) class=(class!("chip", "on" if !board.everyone))>"just me"</a>
-                        <a href=(view_link(board.range, true)) class=(class!("chip", "on" if board.everyone))>"everyone"</a>
+                        jump(href: view_link(board.range, false), label: "just me", on: !board.everyone)
+                        jump(href: view_link(board.range, true), label: "everyone", on: board.everyone)
                     </div>
                 }
             </nav>

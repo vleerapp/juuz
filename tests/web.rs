@@ -96,9 +96,19 @@ async fn anonymous_gets_login_and_rest_stays_subsonic() {
     assert!(font.headers.contains_key(header::CACHE_CONTROL));
     assert!(font.body.starts_with(b"wOF2"));
 
-    let term = page(&h, "/term.js", None).await;
-    assert_eq!(term.status, StatusCode::OK);
-    assert!(term.text().contains("caret-shape"));
+    let client = page(&h, "/client.js", None).await;
+    assert_eq!(client.status, StatusCode::OK);
+    assert!(
+        client.headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript")
+    );
+    let script = client.text();
+    assert!(script.contains("caret-shape"));
+    assert!(script.contains("juuz.grid"));
+    assert!(script.contains("new WebSocket(url)"));
+    assert!(html.contains("src=\"/client.js?v="));
 
     let missing = page(&h, "/rest/doesNotExist?f=json", None).await;
     assert_eq!(missing.json()["status"], "failed");
@@ -540,23 +550,12 @@ async fn lastfm_link_uses_callback_with_state() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn live_script_and_events_need_a_session() {
+async fn live_regions_and_events_need_a_session() {
     let h = Harness::new();
-    let script = page(&h, "/live.js", None).await;
-    assert_eq!(script.status, StatusCode::OK);
-    assert!(
-        script.headers[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .starts_with("text/javascript")
-    );
-    assert!(script.text().contains("new WebSocket(url)"));
-
     let session = login(&h, USER, PASS).await;
     let dash_response = page(&h, "/", Some(&session)).await;
     assert_eq!(dash_response.headers[header::CACHE_CONTROL], "no-store");
     let dash = dash_response.text();
-    assert!(dash.contains("src=\"/live.js\""));
     assert!(dash.contains("data-live=\"stats\""));
     let server = page(&h, "/admin/server", Some(&session)).await.text();
     assert!(server.contains("data-live=\"scan\""));
