@@ -71,6 +71,11 @@ header {
   h1 {
     flex: 1;
   }
+
+  .who {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 }
 
 main {
@@ -262,7 +267,7 @@ input {
 
     &:focus {
       border-image-width: 16px;
-      border-image-outset: 8px;
+      border-image-outset: 11px;
     }
   }
 
@@ -356,6 +361,7 @@ a {
   flex: 1 1 100%;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
 }
 
 .notice {
@@ -556,6 +562,11 @@ a {
     background-color: transparent;
     list-style: none;
     cursor: pointer;
+
+    strong {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
 
     &::-webkit-details-marker {
       display: none;
