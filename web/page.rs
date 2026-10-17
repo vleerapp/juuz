@@ -16,7 +16,9 @@ use crate::auth as crypto;
 use crate::db::users::{self, User};
 
 const STYLE: &str = include_str!("style.css");
-const FONT: &[u8] = include_bytes!("DepartureMono.woff2");
+const FONT: &[u8] = include_bytes!("assets/DepartureMono.woff2");
+const LOGO: &str = include_str!("assets/logo-text.svg");
+const FAVICON: &[u8] = include_bytes!("assets/favicon.ico");
 const CLIENT: &str = include_str!("client.js");
 const BAR_WIDTH: i64 = 40;
 const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
@@ -203,6 +205,40 @@ async fn font() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
     ))
 }
 
+#[route(GET "/logo.svg")]
+async fn logo() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/svg+xml"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=604800"),
+            ),
+        ],
+        LOGO,
+    ))
+}
+
+#[route(GET "/favicon.ico")]
+async fn favicon() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/x-icon"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            ),
+        ],
+        FAVICON,
+    ))
+}
+
 #[route(GET "/client.js")]
 async fn client_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
@@ -224,6 +260,10 @@ fn style_version() -> u64 {
     xxhash_rust::xxh3::xxh3_64(STYLE.as_bytes())
 }
 
+fn logo_version() -> u64 {
+    xxhash_rust::xxh3::xxh3_64(LOGO.as_bytes())
+}
+
 fn client_version() -> u64 {
     xxhash_rust::xxh3::xxh3_64(CLIENT.as_bytes())
 }
@@ -241,7 +281,8 @@ async fn frame(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <meta name="color-scheme" content="dark">
-                <title>"juuz"</title>
+                <title>"Juuz"</title>
+                <link rel="icon" href="/favicon.ico" sizes="any">
                 <link rel="preload" href="/departure-mono.woff2" as="font" type="font/woff2" crossorigin="">
                 <link rel="stylesheet" href=(format!("/juuz.css?v={:x}", style_version()))>
                 <script src=(format!("/client.js?v={:x}", client_version()))></script>
@@ -357,6 +398,8 @@ pub fn routes(b: topcoat::router::RouterBuilder) -> topcoat::router::RouterBuild
         .page(create_key)
         .route(stylesheet)
         .route(font)
+        .route(logo)
+        .route(favicon)
         .route(client_script)
 }
 
@@ -470,7 +513,7 @@ async fn shell(
     Ok(view! {
         <div class=(class!("screen", "guest" if !authed))>
             <header>
-                <h1>"juuz"</h1>
+                <h1><img src=(format!("/logo.svg?v={:x}", logo_version())) alt="juuz"></h1>
                 if authed {
                     <div class="session">
                         <span>(name)</span>

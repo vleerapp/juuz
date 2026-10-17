@@ -174,10 +174,11 @@ section {
   }
 }
 
-h1 {
-  color: var(--accent);
-  font-size: 2em;
-  line-height: 2rlh;
+h1 img {
+  display: block;
+  height: 2rlh;
+  width: auto;
+  user-select: none;
 }
 
 h2 {

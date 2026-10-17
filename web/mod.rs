@@ -67,12 +67,14 @@ impl TokenStore for CookieStore {
     }
 }
 
-pub const PATHS: [&str; 12] = [
+pub const PATHS: [&str; 14] = [
     "/",
     "/login",
     "/logout",
     "/juuz.css",
     "/departure-mono.woff2",
+    "/logo.svg",
+    "/favicon.ico",
     "/client.js",
     "/_topcoat/{*rest}",
     "/events",

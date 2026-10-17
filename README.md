@@ -1,5 +1,7 @@
 <div align="center">
 
+<img width="128px" alt="Juuz" src="https://github.com/user-attachments/assets/00785b98-e5cd-4f7c-a1fd-c0b179b864e6" />
+
 <h1><b>juuz</b></h1>
 
 An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata tagging.
@@ -7,7 +9,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 </div>
 <br>
 
-<img width="2545" height="1387" alt="Screenshot 2026-10-16 at 20-21-27 juuz" src="https://github.com/user-attachments/assets/aebfb85d-1e8a-471e-bcde-0530f4db4c92" />
+<img width="2560" height="1440" alt="Screenshot 2026-10-17 at 04-10-52 Juuz" src="https://github.com/user-attachments/assets/5d803ea0-2a92-471f-ad27-c74b05217a13" />
 
 ## Features
 

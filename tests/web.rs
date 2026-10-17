@@ -721,3 +721,22 @@ async fn cookies_are_secure_behind_https() {
     let proxied = h.raw(req).await;
     assert!(attrs(&proxied).contains("secure"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logo_and_favicon_are_served() {
+    let h = Harness::new();
+    let logo = page(&h, "/logo.svg", None).await;
+    assert_eq!(logo.status, 200);
+    assert_eq!(logo.headers[header::CONTENT_TYPE], "image/svg+xml");
+    assert!(logo.text().starts_with("<svg"));
+
+    let icon = page(&h, "/favicon.ico", None).await;
+    assert_eq!(icon.status, 200);
+    assert_eq!(icon.headers[header::CONTENT_TYPE], "image/x-icon");
+    assert_eq!(&icon.body[..4], &[0, 0, 1, 0]);
+
+    let login = page(&h, "/", None).await.text();
+    assert!(login.contains("rel=\"icon\""));
+    assert!(login.contains("<img src=\"/logo.svg?v="));
+    assert!(!login.contains("<h1>juuz</h1>"));
+}
