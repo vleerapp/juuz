@@ -124,7 +124,7 @@ jobs:
     steps:
       - name: Changelog
         id: changelog
-        uses: 0PandaDEV/changelog@main
+        uses: 0PandaDEV/changelog@a91549d5f8f0e8c7e9bedb5e01f0d3235748caba
         with:
           head: ${{ env.TAG }}
           base: ${{ github.event.inputs.base }}
