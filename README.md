@@ -34,15 +34,17 @@ Save this as `docker-compose.yml`, point `/music` at the music folder and run `d
 ```yaml
 services:
   juuz:
-    image: ghcr.io/vleerapp/juuz:nightly
+    image: ghcr.io/vleerapp/juuz:0.2.0
     restart: unless-stopped
     ports:
       - "4533:4533"
     environment:
-      JUUZ_ADMIN_PASSWORD: change-me
+      JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password
       JUUZ_OMM: "true"
       JUUZ_LASTFM_API_KEY: ""
       JUUZ_LASTFM_SECRET: ""
+      JUUZ_PUBLIC_URL: "https://juuz.example.com"
+      JUUZ_TRUST_PROXY: true
     volumes:
       - data:/data
       - /path/to/your/music:/music
@@ -69,7 +71,10 @@ Environment variables, set in `docker-compose.yml`:
 
 | Variable              | Default             | Description                                                  |
 | --------------------- | ------------------- | ------------------------------------------------------------ |
-| `JUUZ_ADMIN_PASSWORD` | random, logged once | Password of the `admin` user                                 |
+| `JUUZ_ADMIN_PASSWORD` | random, logged once | Password of the `admin` user, only used on first start       |
+| `JUUZ_PUBLIC_URL`     | from request        | Public base url used in share links, e.g. `https://music.example.com` |
+| `JUUZ_RATE_LIMIT`     | `1800`              | Requests per minute per client ip (burst 300), `0` turns it off. 10 failed logins from one ip lock that ip out for 5 minutes |
+| `JUUZ_TRUST_PROXY`    | `false`             | Set `true` behind a reverse proxy so limits use the real client ip from `X-Forwarded-For` |
 | `JUUZ_OMM`            | `true`              | Set `false` to stop sending track names to OpenMusicMetadata |
 | `JUUZ_LASTFM_API_KEY` |                     | Last.fm API key, scrobbling is off without it                |
 | `JUUZ_LASTFM_SECRET`  |                     | Last.fm shared secret                                        |

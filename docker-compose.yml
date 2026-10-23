@@ -1,14 +1,16 @@
 services:
   juuz:
-    image: ghcr.io/vleerapp/juuz:nightly
+    image: ghcr.io/vleerapp/juuz:0.2.0
     restart: unless-stopped
     ports:
       - "4533:4533"
     environment:
-      JUUZ_ADMIN_PASSWORD: change-me
+      JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password
       JUUZ_OMM: "true"
       JUUZ_LASTFM_API_KEY: ""
       JUUZ_LASTFM_SECRET: ""
+      JUUZ_PUBLIC_URL: "https://juuz.example.com"
+      JUUZ_TRUST_PROXY: true
     volumes:
       - data:/data
       - /path/to/your/music:/music
