@@ -24,12 +24,17 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding {listen}"))?;
     tracing::info!("listening on {listen}");
     let jukebox = server.state.jukebox.clone();
-    axum::serve(listener, server.router())
-        .with_graceful_shutdown(async move {
-            shutdown().await;
-            jukebox.shutdown();
-        })
-        .await?;
+    axum::serve(
+        listener,
+        server
+            .router()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown().await;
+        jukebox.shutdown();
+    })
+    .await?;
     Ok(())
 }
 

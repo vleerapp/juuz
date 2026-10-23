@@ -106,6 +106,22 @@ impl Harness {
             .await
     }
 
+    pub async fn get_from(&self, ip: &str, uri: &str) -> Raw {
+        self.get_via(ip, &[], uri).await
+    }
+
+    pub async fn get_via(&self, ip: &str, headers: &[(&str, &str)], uri: &str) -> Raw {
+        let mut req = Request::builder().uri(uri);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let mut req = req.body(Body::empty()).unwrap();
+        let addr: std::net::SocketAddr = format!("{ip}:40000").parse().unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(addr));
+        self.raw(req).await
+    }
+
     pub fn auth(&self) -> String {
         format!("u={USER}&p={PASS}&f=json&c=test")
     }

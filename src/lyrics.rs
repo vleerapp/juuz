@@ -353,9 +353,8 @@ pub fn find(db: &Db, client: &LrclibClient, id: &str) -> Result<Option<Found>, A
     };
 
     let mut local: Vec<String> = Vec::new();
-    let base = Path::new(&info.path).with_extension("");
     for ext in ["lrc", "txt"] {
-        if let Ok(text) = std::fs::read_to_string(base.with_extension(ext))
+        if let Ok(text) = std::fs::read_to_string(Path::new(&info.path).with_extension(ext))
             && !text.trim().is_empty()
         {
             local.push(text);

@@ -25,6 +25,7 @@ const SEEK_TOLERANCE_SECS: u64 = 2;
 const SEEK_DELAY: Duration = Duration::from_millis(300);
 const HEARTBEAT_TICKS: u32 = 10;
 const IDLE_TICKS: u32 = 5;
+const STREAM_LINK_SECS: i64 = 7 * 24 * 3600;
 const RETRY_TICKS: u32 = 15;
 const MAX_FAILURES: u32 = 3;
 
@@ -476,11 +477,22 @@ impl Jukebox {
     }
 
     pub fn sign(&self, id: &str) -> String {
-        self.crypto.sign(&format!("jukebox:{id}"))
+        let expires = crate::db::now() + STREAM_LINK_SECS;
+        format!(
+            "{expires}-{}",
+            self.crypto.sign(&format!("jukebox:{id}:{expires}"))
+        )
     }
 
-    pub fn verify(&self, id: &str, sig: &str) -> bool {
-        crate::auth::constant_eq(&self.sign(id), sig)
+    pub fn verify(&self, id: &str, token: &str) -> bool {
+        let Some((expires, sig)) = token.split_once('-') else {
+            return false;
+        };
+        let Ok(expires_at) = expires.parse::<i64>() else {
+            return false;
+        };
+        let expected = self.crypto.sign(&format!("jukebox:{id}:{expires}"));
+        crate::auth::constant_eq(&expected, sig) && expires_at >= crate::db::now()
     }
 
     async fn song(&self, id: &str) -> Result<Song, ApiError> {

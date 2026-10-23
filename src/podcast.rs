@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, params};
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 use crate::config::PodcastConfig;
 use crate::db::{Db, now};
@@ -19,43 +21,106 @@ pub struct Fetcher {
     pub max_episode_size: u64,
 }
 
+fn public_v4(v4: std::net::Ipv4Addr) -> bool {
+    let o = v4.octets();
+    !(v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        || v4.is_documentation()
+        || o[0] == 0
+        || o[0] >= 240
+        || (o[0] == 100 && (64..128).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19)))
+}
+
 fn is_public(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            !(v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.octets()[0] == 0
-                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
-        }
+        IpAddr::V4(v4) => public_v4(v4),
         IpAddr::V6(v6) => {
             let seg = v6.segments();
-            !(v6.is_loopback()
+            let embedded = |hi: u16, lo: u16| {
+                let [a, b] = hi.to_be_bytes();
+                let [c, d] = lo.to_be_bytes();
+                std::net::Ipv4Addr::new(a, b, c, d)
+            };
+            if v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg[0] & 0xfe00) == 0xfc00
                 || (seg[0] & 0xffc0) == 0xfe80
-                || v6
-                    .to_ipv4_mapped()
-                    .is_some_and(|v4| !is_public(IpAddr::V4(v4))))
+                || (seg[0] & 0xffc0) == 0xfec0
+                || (seg[0] == 0x2001 && (seg[1] == 0 || seg[1] == 0x0db8))
+                || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 1)
+            {
+                return false;
+            }
+            if let Some(v4) = v6.to_ipv4() {
+                return public_v4(v4);
+            }
+            if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6].iter().all(|s| *s == 0) {
+                return public_v4(embedded(seg[6], seg[7]));
+            }
+            if seg[0] == 0x2002 {
+                return public_v4(embedded(seg[1], seg[2]));
+            }
+            true
         }
+    }
+}
+
+#[derive(Debug)]
+struct PublicResolver {
+    inner: DefaultResolver,
+}
+
+impl Resolver for PublicResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.inner.resolve(uri, config, timeout)?;
+        let mut allowed = self.empty();
+        for addr in addrs.iter().filter(|a| is_public(a.ip())) {
+            allowed.push(*addr);
+        }
+        if allowed.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(allowed)
     }
 }
 
 impl Fetcher {
     pub fn new(cfg: &PodcastConfig) -> Fetcher {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
+        let mut builder = ureq::Agent::config_builder();
+        if !cfg.allow_private_hosts {
+            builder = builder.proxy(None);
+        }
+        let config = builder
             .max_redirects(0)
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_recv_body(Some(Duration::from_secs(600)))
             .timeout_global(Some(Duration::from_secs(3600)))
             .user_agent(concat!("juuz/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into();
+            .build();
+        let agent = if cfg.allow_private_hosts {
+            ureq::Agent::new_with_config(config)
+        } else {
+            ureq::Agent::with_parts(
+                config,
+                DefaultConnector::default(),
+                PublicResolver {
+                    inner: DefaultResolver::default(),
+                },
+            )
+        };
         Fetcher {
             agent,
             allow_private: cfg.allow_private_hosts,
@@ -355,7 +420,25 @@ mod tests {
         ] {
             assert!(!is_public(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+        for ip in [
+            "198.18.0.1",
+            "240.0.0.1",
+            "192.0.0.8",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a00:1",
+            "2002:7f00:1::",
+            "2001:db8::1",
+            "::ffff:10.0.0.1",
+            "::10.0.0.1",
+        ] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+            "64:ff9b::808:808",
+        ] {
             assert!(is_public(ip.parse().unwrap()), "{ip}");
         }
     }

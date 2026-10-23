@@ -61,6 +61,7 @@ fn song_file(conn: &Connection, id: &str) -> Result<SongFile, ApiError> {
                 .extension()
                 .map(|e| e.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let content_type = safe_media_type(&r.get::<_, String>(1)?, &suffix);
             Ok(SongFile {
                 id: id.to_string(),
                 mtime: 0,
@@ -68,7 +69,7 @@ fn song_file(conn: &Connection, id: &str) -> Result<SongFile, ApiError> {
                 duration_ms: 0,
                 from_library: false,
                 path,
-                content_type: r.get(1)?,
+                content_type,
                 title: r.get(2)?,
                 suffix,
             })
@@ -76,6 +77,45 @@ fn song_file(conn: &Connection, id: &str) -> Result<SongFile, ApiError> {
     )
     .optional()?
     .ok_or_else(|| ApiError::not_found("song"))
+}
+
+fn safe_media_type(raw: &str, suffix: &str) -> String {
+    let essence = raw
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let allowed = essence.starts_with("audio/")
+        || matches!(
+            essence.as_str(),
+            "video/mp4" | "video/webm" | "application/ogg"
+        );
+    if allowed && essence.bytes().all(|b| b.is_ascii_graphic()) {
+        return essence;
+    }
+    match suffix.to_ascii_lowercase().as_str() {
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "opus" => "audio/opus",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+fn harden(headers: &mut HeaderMap) {
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox"),
+    );
 }
 
 pub async fn serve_file(
@@ -109,6 +149,7 @@ pub async fn serve_file(
     if let Ok(v) = HeaderValue::from_str(content_type) {
         resp.headers_mut().insert(header::CONTENT_TYPE, v);
     }
+    harden(resp.headers_mut());
     if let Some(name) = attachment {
         let safe: String = name
             .chars()
@@ -144,13 +185,14 @@ async fn song_for(ctx: &Ctx) -> Result<SongFile, ApiError> {
 
 fn note_streaming(ctx: &Ctx, song: &SongFile) {
     let user = ctx.user();
-    let player = ctx.params.get("c").unwrap_or("unknown").to_string();
+    let player = crate::state::player_name(ctx.params.get("c"));
     let mut map = ctx.st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
     let key = (user.id.clone(), player.clone());
     if map.get(&key).is_some_and(|n| n.song_id == song.id) {
         return;
     }
     let started = crate::db::now();
+    crate::state::prune_now_playing(&mut map, &user.id);
     map.insert(
         key,
         crate::state::NowPlaying {
@@ -219,8 +261,11 @@ pub async fn stream(ctx: Ctx) -> ApiResult {
 }
 
 const TRANSCODE_CACHE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+const ART_CACHE_LIMIT: u64 = 512 * 1024 * 1024;
+const MAX_ART_DIMENSION: u32 = 12_000;
+const MAX_ART_ALLOC: u64 = 256 * 1024 * 1024;
 
-fn evict_cache(dir: &Path, keep: &Path) {
+fn evict_cache(dir: &Path, keep: &Path, limit: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -238,12 +283,12 @@ fn evict_cache(dir: &Path, keep: &Path) {
         })
         .collect();
     let mut total: u64 = files.iter().map(|f| f.1).sum();
-    if total <= TRANSCODE_CACHE_LIMIT {
+    if total <= limit {
         return;
     }
     files.sort();
     for (_, size, path) in files {
-        if total <= TRANSCODE_CACHE_LIMIT * 3 / 4 {
+        if total <= limit * 3 / 4 {
             break;
         }
         if path != keep && std::fs::remove_file(&path).is_ok() {
@@ -284,7 +329,7 @@ async fn transcoded_file(
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         } else if let Some(parent) = dest.parent() {
-            evict_cache(parent, &dest);
+            evict_cache(parent, &dest, TRANSCODE_CACHE_LIMIT);
         }
         result
     })
@@ -401,7 +446,15 @@ fn load_art(source: &ArtSource) -> Option<Vec<u8>> {
 }
 
 fn resized(bytes: &[u8], size: u32) -> Option<Vec<u8>> {
-    let img = image::load_from_memory(bytes).ok()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_ART_DIMENSION);
+    limits.max_image_height = Some(MAX_ART_DIMENSION);
+    limits.max_alloc = Some(MAX_ART_ALLOC);
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
     let img = if img.width() > size || img.height() > size {
         img.thumbnail(size, size)
     } else {
@@ -416,6 +469,7 @@ fn resized(bytes: &[u8], size: u32) -> Option<Vec<u8>> {
 fn image_response(bytes: Vec<u8>, content_type: &str, etag: &str) -> Response {
     let mut resp = Response::new(Body::from(bytes));
     let h = resp.headers_mut();
+    harden(h);
     if let Ok(v) = HeaderValue::from_str(content_type) {
         h.insert(header::CONTENT_TYPE, v);
     }
@@ -463,6 +517,7 @@ pub async fn get_cover_art(ctx: Ctx) -> ApiResult {
                         let tmp = cache_dir.join(format!(".{hash}_{size}.tmp"));
                         if std::fs::write(&tmp, &bytes).is_ok() {
                             let _ = std::fs::rename(&tmp, &cached);
+                            evict_cache(&cache_dir, &cached, ART_CACHE_LIMIT);
                         }
                     }
                     Ok(image_response(

@@ -13,15 +13,6 @@ use crate::ids;
 use crate::state::AppState;
 use crate::util::iso;
 
-fn public_base(headers: &HeaderMap) -> String {
-    let get = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
-    let scheme = get("x-forwarded-proto").unwrap_or("http");
-    let host = get("x-forwarded-host")
-        .or_else(|| get("host"))
-        .unwrap_or("localhost");
-    format!("{scheme}://{host}")
-}
-
 struct ShareRow {
     id: String,
     owner: String,
@@ -113,7 +104,7 @@ fn require_share_role(ctx: &Ctx) -> Result<(), ApiError> {
 
 pub async fn get_shares(ctx: Ctx) -> ApiResult {
     let me = ctx.user().clone();
-    let base = public_base(&ctx.headers);
+    let base = crate::util::public_base(ctx.st.cfg.public_url.as_deref(), &ctx.headers);
     let list = ctx
         .st
         .db
@@ -135,7 +126,7 @@ pub async fn get_shares(ctx: Ctx) -> ApiResult {
 pub async fn create_share(ctx: Ctx) -> ApiResult {
     require_share_role(&ctx)?;
     let me = ctx.user().clone();
-    let base = public_base(&ctx.headers);
+    let base = crate::util::public_base(ctx.st.cfg.public_url.as_deref(), &ctx.headers);
     let items: Vec<String> = ctx
         .params
         .all("id")
@@ -156,8 +147,19 @@ pub async fn create_share(ctx: Ctx) -> ApiResult {
         .db
         .run(move |c| {
             for item in &items {
-                if kind_of(c, item)?.is_none() {
-                    return Err(ApiError::not_found("item"));
+                match kind_of(c, item)? {
+                    None => return Err(ApiError::not_found("item")),
+                    Some(ItemKind::Playlist) => {
+                        let (owner, public): (String, bool) = c.query_row(
+                            "SELECT owner_id, public FROM playlists WHERE id = ?1",
+                            [item],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )?;
+                        if owner != me.id && !public && !me.admin {
+                            return Err(ApiError::not_found("item"));
+                        }
+                    }
+                    Some(_) => {}
                 }
             }
             let id = ids::random();

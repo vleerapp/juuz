@@ -10,7 +10,7 @@ use topcoat::router::{query_params, request, route};
 use super::auth::{fail, https, require, require_admin, state, token};
 use super::nav::Page;
 use super::notice::{Notice, back};
-use crate::auth::{self, verify_password};
+use crate::auth::{self, verify_password_async};
 use crate::db::users::{self, RoleUpdate};
 
 const MAX_BIT_RATE: i64 = 100_000;
@@ -80,11 +80,12 @@ async fn password(cx: &Cx, Form(form): Form<PasswordForm>) -> Result<SeeOther> {
     if form.new != form.confirm {
         return Ok(back(Page::Account, Notice::PasswordMismatch));
     }
-    let (hash, current) = (user.password_hash.clone(), form.current);
-    let valid = tokio::task::spawn_blocking(move || verify_password(&hash, &current))
-        .await
-        .unwrap_or(false);
-    if !valid {
+    let key = crate::ratelimit::client_key(request::headers(cx));
+    if st.ratelimit.locked(&key) {
+        return Ok(back(Page::Account, Notice::PasswordWrong));
+    }
+    if !verify_password_async(Some(&user.password_hash), &form.current).await {
+        st.ratelimit.fail(&key);
         return Ok(back(Page::Account, Notice::PasswordWrong));
     }
     let (hash, sealed) = auth::credentials(&st.crypto, &form.new)
@@ -122,18 +123,10 @@ const LASTFM_COOKIE: &str = "juuz_lastfm";
 const LASTFM_PATH: &str = "/account/lastfm";
 
 fn origin(cx: &Cx) -> Option<String> {
-    let headers = request::headers(cx);
-    let first = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    };
-    let host = first("x-forwarded-host").or_else(|| first("host"))?;
-    let scheme = first("x-forwarded-proto").unwrap_or_else(|| "http".into());
-    Some(format!("{scheme}://{host}"))
+    Some(crate::util::public_base(
+        state(cx).cfg.public_url.as_deref(),
+        request::headers(cx),
+    ))
 }
 
 #[route(POST "/account/lastfm/start")]

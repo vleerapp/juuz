@@ -32,6 +32,7 @@ pub struct AppState {
     pub podcasts: Arc<crate::podcast::Fetcher>,
     pub transcode_slots: Arc<tokio::sync::Semaphore>,
     pub upload_lock: Arc<tokio::sync::Mutex<()>>,
+    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
     pub now_playing: Arc<Mutex<HashMap<(String, String), NowPlaying>>>,
     pub live: Live,
     pub jukebox: Arc<crate::jukebox::Jukebox>,
@@ -39,6 +40,36 @@ pub struct AppState {
 
 pub const NOW_PLAYING_TTL: i64 = 600;
 pub const JUKEBOX_PLAYER: &str = "jukebox";
+
+pub const MAX_PLAYER_NAME: usize = 64;
+const MAX_NOW_PLAYING: usize = 1000;
+const MAX_PLAYERS_PER_USER: usize = 8;
+
+pub fn player_name(raw: Option<&str>) -> String {
+    raw.unwrap_or("unknown")
+        .chars()
+        .take(MAX_PLAYER_NAME)
+        .collect()
+}
+
+pub fn prune_now_playing(map: &mut HashMap<(String, String), NowPlaying>, user_id: &str) {
+    let now = crate::db::now();
+    if map.len() >= MAX_NOW_PLAYING {
+        map.retain(|_, n| n.until > now);
+    }
+    let mut mine: Vec<((String, String), i64)> = map
+        .iter()
+        .filter(|(_, n)| n.user_id == user_id)
+        .map(|(k, n)| (k.clone(), n.started))
+        .collect();
+    if mine.len() >= MAX_PLAYERS_PER_USER {
+        mine.sort_by_key(|(_, started)| *started);
+        let excess = mine.len() + 1 - MAX_PLAYERS_PER_USER;
+        for (key, _) in mine.into_iter().take(excess) {
+            map.remove(&key);
+        }
+    }
+}
 
 impl AppState {
     pub fn playing_now(&self) -> Vec<NowPlaying> {

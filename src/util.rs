@@ -1,4 +1,31 @@
+use axum::http::HeaderMap;
 use serde_json::{Value, json};
+
+pub fn public_base(configured: Option<&str>, headers: &HeaderMap) -> String {
+    if let Some(url) = configured {
+        return url.to_string();
+    }
+    let first = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let scheme = match first("x-forwarded-proto").as_deref() {
+        Some("https") => "https",
+        _ => "http",
+    };
+    let host = first("x-forwarded-host")
+        .or_else(|| first("host"))
+        .filter(|h| {
+            h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        })
+        .unwrap_or_else(|| "localhost".into());
+    format!("{scheme}://{host}")
+}
 
 pub fn iso(ts: i64) -> String {
     let days = ts.div_euclid(86_400);

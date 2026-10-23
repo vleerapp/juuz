@@ -14,6 +14,25 @@ pub struct Config {
     pub podcasts: PodcastConfig,
     pub lastfm: LastfmConfig,
     pub lrclib_url: String,
+    pub public_url: Option<String>,
+    pub ratelimit: RateLimitConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimitConfig {
+    pub per_minute: u32,
+    pub burst: u32,
+    pub trust_proxy: bool,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            per_minute: 1800,
+            burst: 300,
+            trust_proxy: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +101,8 @@ impl Default for Config {
             podcasts: PodcastConfig::default(),
             lastfm: LastfmConfig::default(),
             lrclib_url: "https://lrclib.net/api".into(),
+            public_url: None,
+            ratelimit: RateLimitConfig::default(),
         }
     }
 }
@@ -145,6 +166,14 @@ impl Config {
     pub fn from_env() -> Result<Config> {
         let mut cfg = Config::default();
         cfg.admin.password = var("JUUZ_ADMIN_PASSWORD");
+        cfg.public_url = var("JUUZ_PUBLIC_URL").map(|u| u.trim().trim_end_matches('/').to_string());
+        cfg.ratelimit.trust_proxy = flag("JUUZ_TRUST_PROXY", cfg.ratelimit.trust_proxy)?;
+        if let Some(v) = var("JUUZ_RATE_LIMIT") {
+            cfg.ratelimit.per_minute = v
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("JUUZ_RATE_LIMIT must be a number, got {v:?}"))?;
+        }
         cfg.omm.enabled = flag("JUUZ_OMM", cfg.omm.enabled)?;
         cfg.lastfm.api_key = var("JUUZ_LASTFM_API_KEY");
         cfg.lastfm.secret = var("JUUZ_LASTFM_SECRET");

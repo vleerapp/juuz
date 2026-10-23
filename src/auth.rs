@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
 use argon2::Argon2;
@@ -6,6 +7,7 @@ use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use hmac::{Hmac, Mac};
 use md5::Md5;
 use sha2::{Digest, Sha256};
 
@@ -31,12 +33,17 @@ impl Crypto {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, key).context("writing secret key")?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        options
+            .open(path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &key))
+            .context("writing secret key")?;
         Ok(Crypto { key })
     }
 
@@ -52,11 +59,11 @@ impl Crypto {
     }
 
     pub fn sign(&self, data: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.key);
-        hasher.update(b"juuz-sign");
-        hasher.update(data.as_bytes());
-        hex::encode(hasher.finalize())
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key)
+            .expect("hmac accepts any key length");
+        mac.update(b"juuz-sign");
+        mac.update(data.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
     }
 
     pub fn open(&self, data: &[u8]) -> Option<Vec<u8>> {
@@ -80,10 +87,36 @@ pub fn hash_password(password: &str) -> Result<String> {
 pub async fn credentials(crypto: &Crypto, password: &str) -> Result<(String, Vec<u8>), ApiError> {
     let sealed = crypto.seal(password.as_bytes());
     let password = password.to_string();
+    let _permit = ARGON_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| ApiError::generic("internal server error"))?;
     let hash = tokio::task::spawn_blocking(move || hash_password(&password))
         .await
         .map_err(|_| ApiError::generic("internal server error"))??;
     Ok((hash, sealed))
+}
+
+static ARGON_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+fn dummy_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| hash_password(&crate::ids::random()).unwrap_or_default())
+}
+
+pub async fn verify_password_async(hash: Option<&str>, password: &str) -> bool {
+    let (hash, known) = match hash {
+        Some(h) => (h.to_string(), true),
+        None => (dummy_hash().to_string(), false),
+    };
+    let password = password.to_string();
+    let Ok(_permit) = ARGON_SLOTS.acquire().await else {
+        return false;
+    };
+    let ok = tokio::task::spawn_blocking(move || verify_password(&hash, &password))
+        .await
+        .unwrap_or(false);
+    ok && known
 }
 
 pub fn verify_password(hash: &str, password: &str) -> bool {
@@ -134,7 +167,7 @@ fn decode_password(raw: &str) -> Result<String, ApiError> {
     }
 }
 
-pub async fn authenticate(st: &AppState, p: &Params) -> Result<User, ApiError> {
+pub async fn authenticate(st: &AppState, p: &Params, ip: &str) -> Result<User, ApiError> {
     if let Some(key) = p.get("apiKey") {
         if p.has("u") || p.has("p") || p.has("t") || p.has("s") {
             return Err(ApiError::conflicting_auth());
@@ -145,6 +178,21 @@ pub async fn authenticate(st: &AppState, p: &Params) -> Result<User, ApiError> {
     }
 
     let name = p.req("u")?.to_string();
+    if st.ratelimit.locked(ip) {
+        return Err(ApiError::wrong_credentials());
+    }
+    match authenticate_user(st, p, name).await {
+        Ok(user) => Ok(user),
+        Err(e) => {
+            if e.code == 40 {
+                st.ratelimit.fail(ip);
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn authenticate_user(st: &AppState, p: &Params, name: String) -> Result<User, ApiError> {
     let user = {
         let name = name.clone();
         st.db.run(move |c| Ok(users::by_name(c, &name)?)).await?
@@ -166,11 +214,7 @@ pub async fn authenticate(st: &AppState, p: &Params) -> Result<User, ApiError> {
                 Err(ApiError::wrong_credentials())
             };
         }
-        let hash = user.password_hash.clone();
-        let candidate = password.clone();
-        let ok = tokio::task::spawn_blocking(move || verify_password(&hash, &candidate))
-            .await
-            .unwrap_or(false);
+        let ok = verify_password_async(Some(&user.password_hash), &password).await;
         if !ok {
             return Err(ApiError::wrong_credentials());
         }

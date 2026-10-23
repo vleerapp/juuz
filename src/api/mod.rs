@@ -18,8 +18,9 @@ use std::future::Future;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, header};
+use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{MethodRouter, any};
 use serde_json::Value;
@@ -107,7 +108,8 @@ where
     tracing::debug!("{} c={}", parts.uri.path(), params.get("c").unwrap_or("-"));
     let fmt = Format::from_params(&params);
     let user = if authed {
-        match auth::authenticate(&st, &params).await {
+        match auth::authenticate(&st, &params, &crate::ratelimit::client_key(&parts.headers)).await
+        {
             Ok(u) => Some(u),
             Err(e) => return render(&fmt, Err(&e)),
         }
@@ -296,6 +298,40 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
     ]
 }
 
+async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+    let ip = crate::ratelimit::resolve_ip(&st.cfg.ratelimit, peer, req.headers());
+    let key = crate::ratelimit::key_for(ip);
+    if let Ok(value) = axum::http::HeaderValue::from_str(&key) {
+        req.headers_mut()
+            .insert(crate::ratelimit::CLIENT_IP_HEADER, value);
+    }
+    if let Err(retry) = st.ratelimit.allow(&key) {
+        return too_many(&req, retry);
+    }
+    next.run(req).await
+}
+
+fn too_many(req: &Request, retry: u64) -> Response {
+    let mut resp = if req.uri().path().starts_with("/rest/") {
+        let params = Params::parse(req.uri().query().unwrap_or(""));
+        render(
+            &Format::from_params(&params),
+            Err(&ApiError::generic("rate limit exceeded, slow down")),
+        )
+    } else {
+        Response::new(Body::from("rate limit exceeded"))
+    };
+    *resp.status_mut() = axum::http::StatusCode::TOO_MANY_REQUESTS;
+    if let Ok(v) = axum::http::HeaderValue::from_str(&retry.to_string()) {
+        resp.headers_mut().insert(header::RETRY_AFTER, v);
+    }
+    resp
+}
+
 pub fn router(st: AppState) -> Router {
     let mut r = Router::new();
     for (name, handler) in endpoints() {
@@ -317,6 +353,7 @@ pub fn router(st: AppState) -> Router {
         axum::routing::get(social::public_share_stream),
     )
     .fallback(endpoint(false, system::unknown))
+    .layer(axum::middleware::from_fn_with_state(st.clone(), guard))
     .layer(tower_http::cors::CorsLayer::permissive())
     .layer(tower_http::trace::TraceLayer::new_for_http())
     .with_state(st)

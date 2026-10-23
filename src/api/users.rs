@@ -26,6 +26,15 @@ fn roles_from(p: &Params) -> RoleUpdate {
     }
 }
 
+fn require_password_auth(ctx: &Ctx) -> Result<(), ApiError> {
+    if ctx.params.has("apiKey") {
+        return Err(ApiError::forbidden(
+            "this operation cannot be authorized with an api key",
+        ));
+    }
+    Ok(())
+}
+
 fn decode(raw: &str) -> Result<String, ApiError> {
     match raw.strip_prefix("enc:") {
         Some(h) => String::from_utf8(hex::decode(h).map_err(|_| ApiError::bad_param("password"))?)
@@ -91,6 +100,10 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
     ctx.require_admin()?;
     let name = ctx.params.req("username")?.to_string();
     let roles = roles_from(&ctx.params);
+    let me = ctx.user().clone();
+    if ctx.params.has("password") {
+        require_password_auth(&ctx)?;
+    }
     let new_password = ctx.params.get("password").map(decode).transpose()?;
 
     let credentials = match &new_password {
@@ -103,6 +116,9 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
         .run(move |c| {
             let user: User =
                 users::by_name(c, &name)?.ok_or_else(|| ApiError::not_found("user"))?;
+            if user.id == me.id && roles.admin == Some(false) {
+                return Err(ApiError::forbidden("you cannot remove your own admin role"));
+            }
             users::update_roles(c, &user.id, &roles)?;
             if let Some((hash, sealed)) = credentials {
                 users::set_password(c, &user.id, &hash, Some(&sealed))?;
@@ -117,10 +133,14 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
 pub async fn delete_user(ctx: Ctx) -> ApiResult {
     ctx.require_admin()?;
     let name = ctx.params.req("username")?.to_string();
+    let me = ctx.user().id.clone();
     ctx.st
         .db
         .run(move |c| {
             let user = users::by_name(c, &name)?.ok_or_else(|| ApiError::not_found("user"))?;
+            if user.id == me {
+                return Err(ApiError::forbidden("you cannot delete your own account"));
+            }
             users::delete(c, &user.id)?;
             Ok(())
         })
@@ -129,6 +149,7 @@ pub async fn delete_user(ctx: Ctx) -> ApiResult {
 }
 
 pub async fn change_password(ctx: Ctx) -> ApiResult {
+    require_password_auth(&ctx)?;
     let me = ctx.user().clone();
     let name = ctx.params.req("username")?.to_string();
     if !name.eq_ignore_ascii_case(&me.name) && !me.admin {
@@ -166,6 +187,7 @@ async fn key_owner(ctx: &Ctx) -> Result<User, ApiError> {
 }
 
 pub async fn create_api_key(ctx: Ctx) -> ApiResult {
+    require_password_auth(&ctx)?;
     let owner = key_owner(&ctx).await?;
     let label = ctx.params.get("name").unwrap_or("").to_string();
     let key = auth::generate_api_key();

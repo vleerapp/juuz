@@ -25,6 +25,7 @@ const MAX_LYRICS: u64 = 1024 * 1024;
 const MAX_TEXT_FIELD: usize = 8192;
 const MAX_TEXT_FIELDS: usize = 64;
 const MULTIPART_OVERHEAD: u64 = 1024 * 1024;
+const MAX_COVER_DIMENSION: u32 = 12_000;
 
 fn check_role(st: &AppState, user: &User) -> Result<(), ApiError> {
     if !st.cfg.upload.enabled {
@@ -427,12 +428,20 @@ fn image_extension(path: &Path) -> Result<&'static str, ApiError> {
     use std::io::Read;
     let mut head = [0u8; 32];
     let n = std::fs::File::open(path)?.read(&mut head)?;
-    match image::guess_format(&head[..n]) {
-        Ok(image::ImageFormat::Jpeg) => Ok("jpg"),
-        Ok(image::ImageFormat::Png) => Ok("png"),
-        Ok(image::ImageFormat::WebP) => Ok("webp"),
-        _ => Err(bad_upload("cover must be a jpeg, png or webp image")),
+    let ext = match image::guess_format(&head[..n]) {
+        Ok(image::ImageFormat::Jpeg) => "jpg",
+        Ok(image::ImageFormat::Png) => "png",
+        Ok(image::ImageFormat::WebP) => "webp",
+        _ => return Err(bad_upload("cover must be a jpeg, png or webp image")),
+    };
+    let (w, h) = image::ImageReader::open(path)?
+        .with_guessed_format()?
+        .into_dimensions()
+        .map_err(|_| bad_upload("cover is not a readable image"))?;
+    if w > MAX_COVER_DIMENSION || h > MAX_COVER_DIMENSION {
+        return Err(bad_upload("cover dimensions are too large"));
     }
+    Ok(ext)
 }
 
 async fn process_cover(
@@ -512,12 +521,12 @@ async fn process_lyrics(
                 .ok_or_else(|| ApiError::not_found("song"))
         })
         .await?;
-    let base = Path::new(&song_path).with_extension("");
+    let song_path = Path::new(&song_path);
     let _guard = st.upload_lock.lock().await;
     for other in ["lrc", "txt"] {
-        let _ = tokio::fs::remove_file(base.with_extension(other)).await;
+        let _ = tokio::fs::remove_file(song_path.with_extension(other)).await;
     }
-    tokio::fs::rename(&*work, base.with_extension(ext)).await?;
+    tokio::fs::rename(&*work, song_path.with_extension(ext)).await?;
     Ok(json!({"status": "created", "kind": "lyrics", "songId": song_id}))
 }
 
@@ -526,7 +535,8 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
     let mut params = ctx.params.clone();
     let mut user: Option<User> = None;
     if params.has("apiKey") || params.has("u") {
-        let u = auth::authenticate(&st, &params).await?;
+        let u =
+            auth::authenticate(&st, &params, &crate::ratelimit::client_key(&ctx.headers)).await?;
         check_role(&st, &u)?;
         user = Some(u);
     }
@@ -590,7 +600,9 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
         let user = match user.take() {
             Some(u) => u,
             None => {
-                let u = auth::authenticate(&st, &params).await?;
+                let u =
+                    auth::authenticate(&st, &params, &crate::ratelimit::client_key(&ctx.headers))
+                        .await?;
                 check_role(&st, &u)?;
                 u
             }

@@ -139,7 +139,7 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
     let times = ctx.params.ints("time")?;
     let submission = ctx.params.bool("submission").unwrap_or(true);
     let user = ctx.user().clone();
-    let player = ctx.params.get("c").unwrap_or("unknown").to_string();
+    let player = crate::state::player_name(ctx.params.get("c"));
     tracing::debug!(
         "scrobble from {player} submission={submission} songs={}",
         ids.len()
@@ -156,21 +156,19 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
             return Err(ApiError::not_found("song"));
         }
         super::lastfm::forward(&ctx.st, &user, vec![ids[0].clone()], Vec::new(), false);
-        ctx.st
-            .now_playing
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                (user.id.clone(), player.clone()),
-                NowPlaying {
-                    user_id: user.id.clone(),
-                    song_id: ids[0].clone(),
-                    username: user.name.clone(),
-                    player,
-                    started: now(),
-                    until: now() + crate::state::NOW_PLAYING_TTL,
-                },
-            );
+        let mut playing = ctx.st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
+        crate::state::prune_now_playing(&mut playing, &user.id);
+        playing.insert(
+            (user.id.clone(), player.clone()),
+            NowPlaying {
+                user_id: user.id.clone(),
+                song_id: ids[0].clone(),
+                username: user.name.clone(),
+                player,
+                started: now(),
+                until: now() + crate::state::NOW_PLAYING_TTL,
+            },
+        );
         ctx.st.live.notify();
         return empty();
     }

@@ -11,6 +11,7 @@ pub mod lyrics;
 pub mod omm;
 pub mod params;
 pub mod podcast;
+pub mod ratelimit;
 pub mod response;
 pub mod scanner;
 pub mod state;
@@ -52,6 +53,9 @@ fn bootstrap_admin(cfg: &Config, db: &Db, crypto: &Crypto) -> Result<()> {
         Some(p) => (p.clone(), false),
         None => (ids::random(), true),
     };
+    if password == "change-me" {
+        tracing::warn!("JUUZ_ADMIN_PASSWORD is the example value 'change-me', change it");
+    }
     let hash = auth::hash_password(&password)?;
     let secret = crypto.seal(password.as_bytes());
     db::users::create(&conn, &name, &hash, Some(&secret), true)?;
@@ -105,6 +109,7 @@ pub fn init(mut cfg: Config) -> Result<Server> {
         (None, None)
     };
 
+    let cfg_ratelimit = cfg.ratelimit.clone();
     let cfg_podcasts = cfg.podcasts.clone();
     let cfg_lrclib = cfg.lrclib_url.clone();
     let cfg_lastfm = lastfm::Client::new(&cfg.lastfm).map(Arc::new);
@@ -143,6 +148,7 @@ pub fn init(mut cfg: Config) -> Result<Server> {
                 .unwrap_or(1),
         )),
         upload_lock: Default::default(),
+        ratelimit: Arc::new(ratelimit::RateLimiter::new(&cfg_ratelimit)),
         now_playing: Default::default(),
         live,
         jukebox,

@@ -10,7 +10,7 @@ use topcoat::session;
 
 use super::nav::Page;
 use super::notice::{Notice, back};
-use crate::auth::verify_password;
+use crate::auth::verify_password_async;
 use crate::db::now;
 use crate::db::users::{self, User};
 use crate::error::ApiError;
@@ -83,21 +83,24 @@ struct LoginForm {
 async fn login(cx: &Cx, Form(form): Form<LoginForm>) -> Result<SeeOther> {
     let st = state(cx);
     let name = form.username.trim().to_string();
+    let key = crate::ratelimit::client_key(topcoat::router::request::headers(cx));
     let user = st
         .db
         .run(move |c| Ok(users::by_name(c, &name)?))
         .await
         .map_err(fail)?;
-    let Some(user) = user else {
-        return Ok(back(Page::Stats, Notice::LoginFailed));
-    };
-    let (hash, password) = (user.password_hash.clone(), form.password);
-    let valid = tokio::task::spawn_blocking(move || verify_password(&hash, &password))
-        .await
-        .unwrap_or(false);
-    if !valid {
+    if st.ratelimit.locked(&key) {
         return Ok(back(Page::Stats, Notice::LoginFailed));
     }
+    let valid = verify_password_async(
+        user.as_ref().map(|u| u.password_hash.as_str()),
+        &form.password,
+    )
+    .await;
+    let Some(user) = user.filter(|_| valid) else {
+        st.ratelimit.fail(&key);
+        return Ok(back(Page::Stats, Notice::LoginFailed));
+    };
     let started = session::start(cx).await?;
     let expires = started
         .expires_at
