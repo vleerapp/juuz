@@ -181,10 +181,22 @@ fn inspect_mp3(bytes: &[u8]) -> Mp3Info {
             count += 1;
         }
     }
+    let trim = bytes
+        .windows(4)
+        .take(256)
+        .position(|w| w == b"Info" || w == b"Xing")
+        .map(|at| {
+            let t = &bytes[at + 141..at + 144];
+            let packed = u32::from_be_bytes([0, t[0], t[1], t[2]]) as usize;
+            let (delay, padding) = (packed >> 12, packed & 0xFFF);
+            let spf = if rate < 32_000 { 576 } else { 1152 };
+            spf + delay + padding
+        })
+        .unwrap_or(0);
     Mp3Info {
         rate,
         channels,
-        seconds: frames as f64 / f64::from(rate.max(1)),
+        seconds: frames.saturating_sub(trim) as f64 / f64::from(rate.max(1)),
         rms: (energy / count.max(1) as f64).sqrt(),
     }
 }
@@ -221,7 +233,7 @@ async fn mp3_transcode_keeps_duration_across_sample_rates() {
         assert_eq!(info.rate, expected_rate, "rate {rate}");
         assert_eq!(info.channels, ch);
         assert!(
-            (info.seconds - 2.0).abs() < 0.15,
+            (info.seconds - 2.0).abs() < 0.01,
             "rate {rate}: {} s",
             info.seconds
         );
