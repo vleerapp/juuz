@@ -139,10 +139,9 @@ pub fn valid_id(id: &str, kind: &str) -> bool {
         .and_then(|r| r.strip_prefix(kind))
         .and_then(|r| r.strip_prefix(':'))
         .is_some_and(|tail| {
-            tail.len() == 16
-                && tail
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            (1..=18).contains(&tail.len())
+                && !tail.starts_with('0')
+                && tail.bytes().all(|b| b.is_ascii_digit())
         })
 }
 
@@ -402,6 +401,39 @@ impl Client {
             .and_then(|s| s.data.into_song()))
     }
 
+    pub fn search_songs(
+        &self,
+        title: &str,
+        artist: &str,
+        album: Option<&str>,
+        duration_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<SongRes>> {
+        let duration = duration_ms.to_string();
+        let limit_text = limit.to_string();
+        let mut q = vec![("name", clip(title.trim())), ("limit", limit_text.as_str())];
+        if !artist.trim().is_empty() {
+            q.push(("artist", clip(artist.trim())));
+        }
+        if let Some(a) = album.map(str::trim).filter(|a| !a.is_empty()) {
+            q.push(("album", clip(a)));
+        }
+        if duration_ms > 0 {
+            q.push(("duration", &duration));
+        }
+        match self.get::<Many>("/search/song", &q)? {
+            Some(many) => Ok(many
+                .data
+                .into_iter()
+                .filter_map(Resource::into_song)
+                .collect()),
+            None => Ok(self
+                .identify_song(title, artist, album, duration_ms)?
+                .into_iter()
+                .collect()),
+        }
+    }
+
     pub fn identify_album(&self, title: &str, artist: &str) -> Result<Option<AlbumRes>> {
         let mut q = vec![("name", clip(title.trim()))];
         if !artist.trim().is_empty() {
@@ -586,6 +618,79 @@ pub fn store_song_match(
             }
         }
     }
+    Ok(())
+}
+
+pub fn store_manual_match(
+    conn: &Connection,
+    song_id: &str,
+    m: &SongRes,
+    local_album: Option<&str>,
+    file: Option<&crate::scanner::tags::TrackInfo>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE albums SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
+             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
+             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
+             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
+         WHERE id = (SELECT album_id FROM songs WHERE id = ?1)",
+        [song_id],
+    )?;
+    conn.execute(
+        "UPDATE artists SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
+             image_hash = NULL, image_path = NULL
+         WHERE id IN (SELECT artist_id FROM song_artists WHERE song_id = ?1)",
+        [song_id],
+    )?;
+    conn.execute(
+        "UPDATE songs SET year = ?2, date = ?3, isrc = ?4, track = ?5, disc = ?6 WHERE id = ?1",
+        params![
+            song_id,
+            file.and_then(|t| t.year),
+            file.and_then(|t| t.date.clone()),
+            file.and_then(|t| t.isrc.as_deref())
+                .and_then(normalize_isrc),
+            file.and_then(|t| t.track),
+            file.and_then(|t| t.disc),
+        ],
+    )?;
+    conn.execute("DELETE FROM song_genres WHERE song_id = ?1", [song_id])?;
+    for (i, g) in file
+        .map(|t| t.genres.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        let gid = ids::genre(g);
+        conn.execute(
+            "INSERT OR IGNORE INTO genres(id, name) VALUES (?1, ?2)",
+            params![gid, g],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO song_genres(song_id, genre_id, position) VALUES (?1, ?2, ?3)",
+            params![song_id, gid, i as i64],
+        )?;
+    }
+    conn.execute(
+        "UPDATE albums SET year = ?2, date = ?3, upc = ?4, label = ?5
+         WHERE id = (SELECT album_id FROM songs WHERE id = ?1)",
+        params![
+            song_id,
+            file.and_then(|t| t.year),
+            file.and_then(|t| t.date.clone()),
+            file.and_then(|t| t.upc.as_deref()).and_then(normalize_upc),
+            file.and_then(|t| t.label.clone()),
+        ],
+    )?;
+    store_song_match(conn, song_id, m, local_album)
+}
+
+pub fn clear_match(conn: &Connection, song_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE songs SET omm_id = NULL, omm_checked_at = NULL, omm_synced_at = NULL,
+             omm_retry_at = ?2 WHERE id = ?1",
+        params![song_id, now() + UNRESOLVED_RETRY_SECS],
+    )?;
     Ok(())
 }
 
@@ -1221,10 +1326,15 @@ mod tests {
 
     #[test]
     fn id_validation() {
-        assert!(valid_id("omm:song:0a1b2c3d4e5f6g7h", "song"));
-        assert!(!valid_id("omm:album:0a1b2c3d4e5f6g7h", "song"));
+        assert!(valid_id("omm:song:1234567890", "song"));
+        assert!(!valid_id("omm:album:1234567890", "song"));
         assert!(!valid_id("omm:song:SHORT", "song"));
-        assert!(!valid_id("song:0a1b2c3d4e5f6g7h", "song"));
+        assert!(!valid_id("song:1234567890", "song"));
+        assert!(!valid_id("omm:song:0123456789", "song"));
+        assert!(!valid_id("omm:song:", "song"));
+        assert!(!valid_id("omm:song:1234567890123456789", "song"));
+        assert!(valid_id("omm:song:123456789012345678", "song"));
+        assert!(!valid_id("omm:song:0a1b2c3d4e5f6g7h", "song"));
     }
 
     #[test]
@@ -1246,11 +1356,11 @@ mod tests {
 
     #[test]
     fn parses_song_with_relationships() {
-        let json = r#"{"data":{"id":"omm:song:0a1b2c3d4e5f6g7h","type":"song",
+        let json = r#"{"data":{"id":"omm:song:1234567890","type":"song",
             "attributes":{"name":"X","artistNames":["A"],"isrc":"USRC17607839","durationMs":1000,"genres":["Pop"]},
-            "relationships":{"albums":{"data":[{"id":"omm:album:1a2b3c4d5e6f7g8h","type":"album",
+            "relationships":{"albums":{"data":[{"id":"omm:album:2345678901","type":"album",
             "attributes":{"name":"Y","trackCount":1,"artistNames":["A"],"upc":"602455878540"}}]},
-            "artists":{"data":[{"id":"omm:artist:2a3b4c5d6e7f8g9h","type":"artist","attributes":{"name":"A"}}]}}}}"#;
+            "artists":{"data":[{"id":"omm:artist:3456789012","type":"artist","attributes":{"name":"A"}}]}}}}"#;
         let s: Single = serde_json::from_str(json).unwrap();
         let song = s.data.into_song().unwrap();
         assert_eq!(song.attributes.genres, vec!["Pop"]);
@@ -1267,7 +1377,7 @@ mod tests {
     #[test]
     fn acceptance_rules() {
         let c = SongRes {
-            id: "omm:song:0a1b2c3d4e5f6g7h".into(),
+            id: "omm:song:1234567890".into(),
             attributes: SongAttrs {
                 name: "Temple".into(),
                 artist_names: vec!["Lifelikemoviee".into()],

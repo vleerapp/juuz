@@ -9,15 +9,11 @@ fn result(v: &Value) -> &Value {
     &v["juuzUploadResult"]
 }
 
-const SONG_ID: &str = "omm:song:0a1b2c3d4e5f6g7h";
+const SONG_ID: &str = "omm:song:1234567890";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn upload_with_omm_id_fills_missing_tags_and_stores_ids() {
-    let mock = mock_omm(vec![route(
-        "/catalog/omm:song:0a1b2c3d4e5f6g7h",
-        200,
-        OMM_SONG,
-    )]);
+    let mock = mock_omm(vec![route("/catalog/omm:song:1234567890", 200, OMM_SONG)]);
     let h = Harness::with_omm(Some(mock.url.clone()));
     let key = h.api_key().await;
     let v = h
@@ -46,7 +42,7 @@ async fn upload_with_omm_id_fills_missing_tags_and_stores_ids() {
             &format!("id={}", song["albumId"].as_str().unwrap()),
         )
         .await;
-    assert_eq!(album["album"]["ommId"], "omm:album:1a2b3c4d5e6f7g8h");
+    assert_eq!(album["album"]["ommId"], "omm:album:2345678901");
     assert_eq!(album["album"]["recordLabels"][0]["name"], "Virgin");
     let artist = h
         .ok(
@@ -54,16 +50,12 @@ async fn upload_with_omm_id_fills_missing_tags_and_stores_ids() {
             &format!("id={}", song["artistId"].as_str().unwrap()),
         )
         .await;
-    assert_eq!(artist["artist"]["ommId"], "omm:artist:2a3b4c5d6e7f8g9h");
+    assert_eq!(artist["artist"]["ommId"], "omm:artist:3456789012");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn omm_only_fills_gaps_unless_preferred() {
-    let mock = mock_omm(vec![route(
-        "/catalog/omm:song:0a1b2c3d4e5f6g7h",
-        200,
-        OMM_SONG,
-    )]);
+    let mock = mock_omm(vec![route("/catalog/omm:song:1234567890", 200, OMM_SONG)]);
     let h = Harness::with_omm(Some(mock.url.clone()));
     let key = h.api_key().await;
     let tagged = tagged_wav_bytes(
@@ -170,17 +162,17 @@ async fn worker_resolves_and_rejects_low_confidence_matches() {
         route(
             "/identify/artist?name=Daft",
             200,
-            r#"{"data":{"id":"omm:artist:2a3b4c5d6e7f8g9h","type":"artist","attributes":{"name":"Daft Punk"}}}"#,
+            r#"{"data":{"id":"omm:artist:3456789012","type":"artist","attributes":{"name":"Daft Punk"}}}"#,
         ),
         route(
             "/identify/artist",
             200,
-            r#"{"data":{"id":"omm:artist:9a3b4c5d6e7f8g9h","type":"artist","attributes":{"name":"Completely Other"}}}"#,
+            r#"{"data":{"id":"omm:artist:9456789012","type":"artist","attributes":{"name":"Completely Other"}}}"#,
         ),
         route(
             "/identify/album",
             200,
-            r#"{"data":{"id":"omm:album:1a2b3c4d5e6f7g8h","type":"album","attributes":{"name":"Discovery","trackCount":14,"artistNames":["Daft Punk"]}}}"#,
+            r#"{"data":{"id":"omm:album:2345678901","type":"album","attributes":{"name":"Discovery","trackCount":14,"artistNames":["Daft Punk"]}}}"#,
         ),
     ]);
     let h = Harness::with_omm(Some(mock.url.clone()));
@@ -236,7 +228,7 @@ async fn worker_resolves_and_rejects_low_confidence_matches() {
     let artists = h.ok("search3", "query=daft").await;
     assert_eq!(
         artists["searchResult3"]["artist"][0]["ommId"],
-        "omm:artist:2a3b4c5d6e7f8g9h"
+        "omm:artist:3456789012"
     );
     let nobody = h.ok("search3", "query=nobody").await;
     assert!(nobody["searchResult3"]["artist"][0].get("ommId").is_none());
@@ -271,7 +263,7 @@ async fn client_honors_retry_after_on_rate_limit() {
         route(
             "/identify/artist",
             200,
-            r#"{"data":{"id":"omm:artist:2a3b4c5d6e7f8g9h","type":"artist","attributes":{"name":"Daft Punk"}}}"#,
+            r#"{"data":{"id":"omm:artist:3456789012","type":"artist","attributes":{"name":"Daft Punk"}}}"#,
         ),
     ]);
     let cfg = juuz::config::OmmConfig {
@@ -286,7 +278,7 @@ async fn client_honors_retry_after_on_rate_limit() {
             .await
             .unwrap()
             .unwrap();
-    assert_eq!(found.unwrap().id, "omm:artist:2a3b4c5d6e7f8g9h");
+    assert_eq!(found.unwrap().id, "omm:artist:3456789012");
     assert!(
         started.elapsed().as_millis() >= 900,
         "must wait for Retry-After"
@@ -337,14 +329,14 @@ async fn album_match_seeds_songs_and_fills_missing_artwork() {
                 "/identify/album",
                 200,
                 format!(
-                    r#"{{"data":{{"id":"omm:album:1a2b3c4d5e6f7g8h","type":"album","attributes":{{"name":"Discovery","trackCount":14,"artistNames":["Daft Punk"],"upc":"724384960650","label":"Virgin","genres":["Electronic"],"releaseDate":"2001-03-12","artworkUrl":"{base}/img/{{w}}x{{h}}.png"}}}}}}"#
+                    r#"{{"data":{{"id":"omm:album:2345678901","type":"album","attributes":{{"name":"Discovery","trackCount":14,"artistNames":["Daft Punk"],"upc":"724384960650","label":"Virgin","genres":["Electronic"],"releaseDate":"2001-03-12","artworkUrl":"{base}/img/{{w}}x{{h}}.png"}}}}}}"#
                 ),
             ),
             route(
                 "/identify/artist",
                 200,
                 format!(
-                    r#"{{"data":{{"id":"omm:artist:2a3b4c5d6e7f8g9h","type":"artist","attributes":{{"name":"Daft Punk","artworkUrl":"{base}/img/{{w}}x{{h}}.png"}}}}}}"#
+                    r#"{{"data":{{"id":"omm:artist:3456789012","type":"artist","attributes":{{"name":"Daft Punk","artworkUrl":"{base}/img/{{w}}x{{h}}.png"}}}}}}"#
                 ),
             ),
             route("/img/", 200, png.clone()),
@@ -399,7 +391,7 @@ async fn album_match_seeds_songs_and_fills_missing_artwork() {
 
     let album_id = song["albumId"].as_str().unwrap();
     let album = h.ok("getAlbum", &format!("id={album_id}")).await["album"].clone();
-    assert_eq!(album["ommId"], "omm:album:1a2b3c4d5e6f7g8h");
+    assert_eq!(album["ommId"], "omm:album:2345678901");
     assert_eq!(album["coverArt"], album_id);
     assert_eq!(album["recordLabels"][0]["name"], "Virgin");
 

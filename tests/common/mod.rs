@@ -399,7 +399,7 @@ pub fn mock_server(make_routes: impl FnOnce(&str) -> Vec<Route>) -> MockOmm {
     }
 }
 
-pub const OMM_SONG: &str = r#"{"data":{"id":"omm:song:0a1b2c3d4e5f6g7h","type":"song","attributes":{"name":"Digital Love","albumName":"Discovery","artistNames":["Daft Punk"],"isrc":"FRZ390100010","trackNumber":3,"discNumber":1,"genres":["Electronic"],"releaseDate":"2001-03-12","durationMs":500},"relationships":{"albums":{"data":[{"id":"omm:album:1a2b3c4d5e6f7g8h","type":"album","attributes":{"name":"Discovery","trackCount":14,"artistNames":["Daft Punk"],"upc":"724384960650","label":"Virgin"}}]},"artists":{"data":[{"id":"omm:artist:2a3b4c5d6e7f8g9h","type":"artist","attributes":{"name":"Daft Punk"}}]}}}}"#;
+pub const OMM_SONG: &str = r#"{"data":{"id":"omm:song:1234567890","type":"song","attributes":{"name":"Digital Love","albumName":"Discovery","artistNames":["Daft Punk"],"isrc":"FRZ390100010","trackNumber":3,"discNumber":1,"genres":["Electronic"],"releaseDate":"2001-03-12","durationMs":500},"relationships":{"albums":{"data":[{"id":"omm:album:2345678901","type":"album","attributes":{"name":"Discovery","trackCount":14,"artistNames":["Daft Punk"],"upc":"724384960650","label":"Virgin"}}]},"artists":{"data":[{"id":"omm:artist:3456789012","type":"artist","attributes":{"name":"Daft Punk"}}]}}}}"#;
 
 fn read_request(stream: &mut std::net::TcpStream) -> String {
     let mut data: Vec<u8> = Vec::new();
