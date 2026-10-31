@@ -802,3 +802,37 @@ async fn music_folder_filter_works_on_every_endpoint_that_takes_it() {
     let listed = h.ok("getAlbumList2", &format!("type=newest&{q}")).await;
     assert_eq!(listed["albumList2"]["album"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rescan_repairs_albums_left_unfinished_by_an_interrupted_scan() {
+    let h = Harness::new();
+    make_track(
+        h.music.path(),
+        "Alpha/First/01 - One.wav",
+        150,
+        &tags("One", "Alpha", "First", 1),
+    );
+    h.scan().await;
+    let db = h.server.state.db.clone();
+    db.run(|c| {
+        c.execute("DELETE FROM album_artists", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let count = || {
+        let db = h.server.state.db.clone();
+        async move {
+            db.run(|c| {
+                Ok(c.query_row("SELECT COUNT(*) FROM album_artists", [], |r| {
+                    r.get::<_, i64>(0)
+                })?)
+            })
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(count().await, 0);
+    h.scan().await;
+    assert_eq!(count().await, 1);
+}

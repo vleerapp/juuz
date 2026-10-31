@@ -13,6 +13,7 @@ use crate::ids;
 pub struct FolderCtx {
     pub root: PathBuf,
     pub generation: i64,
+    pub library_id: i64,
 }
 
 #[derive(Default)]
@@ -44,6 +45,14 @@ pub fn fts_del(conn: &Connection, id: &str) -> rusqlite::Result<()> {
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
     format!("{:032x}", xxh3_128(bytes))
+}
+
+pub fn scoped_album_key(library_id: i64, rel_dir: &str, t: &TrackInfo) -> grouping::AlbumKey {
+    let mut key = album_key(rel_dir, t);
+    if library_id != crate::db::libraries::DEFAULT_ID {
+        key.id = ids::album(&["library", &library_id.to_string(), &key.id]);
+    }
+    key
 }
 
 pub fn rel_dir(root: &Path, file: &Path) -> String {
@@ -97,12 +106,12 @@ pub fn upsert_tracks(
     ctx: &FolderCtx,
     tracks: &[TrackInfo],
 ) -> Result<Outcome, ApiError> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut out = Outcome::default();
     let ts = now();
 
     for t in tracks {
-        let key = album_key(&rel_dir(&ctx.root, &t.path), t);
+        let key = scoped_album_key(ctx.library_id, &rel_dir(&ctx.root, &t.path), t);
         let album_id = key.id.clone();
         let song_id = ids::song(&t.audio_hash, &album_id);
         let path_str = t.path.to_string_lossy().into_owned();
@@ -142,11 +151,12 @@ pub fn upsert_tracks(
         if existing_path.is_none() {
             let moved: Vec<(String, String, String)> = {
                 let mut stmt = tx.prepare(
-                    "SELECT id, path, album_id FROM songs WHERE audio_hash = ?1 AND id != ?2 AND path != ?3",
+                    "SELECT id, path, album_id FROM songs WHERE audio_hash = ?1 AND id != ?2 AND path != ?3 AND library_id = ?4",
                 )?;
-                stmt.query_map(params![t.audio_hash, song_id, path_str], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })?
+                stmt.query_map(
+                    params![t.audio_hash, song_id, path_str, ctx.library_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?
                 .collect::<rusqlite::Result<_>>()?
             };
             for (old_id, old_path, old_album) in moved {
@@ -173,8 +183,8 @@ pub fn upsert_tracks(
 
         let is_va_tag = t.compilation as i64;
         tx.execute(
-            "INSERT INTO albums(id, title, group_tier, mbid, upc, label, year, date, original_date, is_compilation, derived_artist, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO albums(id, title, group_tier, mbid, upc, label, year, date, original_date, is_compilation, derived_artist, created_at, library_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO UPDATE SET
                 mbid = COALESCE(albums.mbid, excluded.mbid),
                 upc = COALESCE(albums.upc, excluded.upc),
@@ -195,7 +205,8 @@ pub fn upsert_tracks(
                 t.original_date,
                 is_va_tag,
                 t.album_artists.is_empty() as i64,
-                ts
+                ts,
+                ctx.library_id
             ],
         )?;
         out.albums.insert(album_id.clone());
@@ -222,11 +233,11 @@ pub fn upsert_tracks(
             "INSERT INTO songs(id, path, album_id, title, track, disc, disc_subtitle, year, date, original_date,
                 duration_ms, bitrate, sample_rate, channels, bit_depth, size, mtime, suffix, content_type, audio_hash,
                 mbid, mbid_track, isrc, bpm, comment, composer, lyrics, rg_track_gain, rg_track_peak, rg_album_gain,
-                rg_album_peak, cover_hash, display_artist, seen_gen, indexed_at, created_at)
+                rg_album_peak, cover_hash, display_artist, seen_gen, indexed_at, created_at, library_id)
              VALUES (:id, :path, :album, :title, :track, :disc, :disc_subtitle, :year, :date, :original_date,
                 :duration, :bitrate, :sample_rate, :channels, :bit_depth, :size, :mtime, :suffix, :content_type, :audio_hash,
                 :mbid, :mbid_track, :isrc, :bpm, :comment, :composer, :lyrics, :rg_tg, :rg_tp, :rg_ag,
-                :rg_ap, :cover, :display, :generation, :now_ms, :now)
+                :rg_ap, :cover, :display, :generation, :now_ms, :now, :library)
              ON CONFLICT(id) DO UPDATE SET
                 path = excluded.path, album_id = excluded.album_id,
                 title = excluded.title, track = excluded.track, disc = excluded.disc,
@@ -240,7 +251,7 @@ pub fn upsert_tracks(
                 rg_track_gain = excluded.rg_track_gain, rg_track_peak = excluded.rg_track_peak,
                 rg_album_gain = excluded.rg_album_gain, rg_album_peak = excluded.rg_album_peak,
                 cover_hash = excluded.cover_hash, display_artist = excluded.display_artist,
-                seen_gen = excluded.seen_gen, indexed_at = excluded.indexed_at",
+                seen_gen = excluded.seen_gen, indexed_at = excluded.indexed_at, library_id = excluded.library_id",
             named_params! {
                 ":id": song_id,
                 ":path": path_str,
@@ -276,6 +287,7 @@ pub fn upsert_tracks(
                 ":cover": cover_hash,
                 ":display": display,
                 ":generation": ctx.generation,
+                ":library": ctx.library_id,
                 ":now": ts,
                 ":now_ms": now_ms(),
             },
@@ -340,7 +352,7 @@ pub fn finalize_albums(
     albums: &HashSet<String>,
     moves: &[(String, String)],
 ) -> Result<(), ApiError> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     for (old, new) in moves {
         let remaining: i64 = tx.query_row(
@@ -476,7 +488,7 @@ pub fn prune_orphans(conn: &mut Connection) -> Result<(), ApiError> {
 }
 
 pub fn prune_entities(conn: &mut Connection) -> Result<(), ApiError> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let orphan_albums: Vec<String> = {
         let mut stmt = tx.prepare(
@@ -517,7 +529,7 @@ pub fn prune_entities(conn: &mut Connection) -> Result<(), ApiError> {
 }
 
 pub fn prune_user_rows(conn: &mut Connection) -> Result<(), ApiError> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (table, col) in [
         ("starred", "item_id"),
         ("ratings", "item_id"),
@@ -539,21 +551,41 @@ pub fn prune_user_rows(conn: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+pub fn repair_albums(conn: &mut Connection) -> Result<usize, ApiError> {
+    let incomplete: HashSet<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT al.id FROM albums al WHERE
+                 NOT EXISTS (SELECT 1 FROM album_artists aa WHERE aa.album_id = al.id)
+              OR (al.cover_hash IS NULL AND EXISTS (
+                     SELECT 1 FROM songs s WHERE s.album_id = al.id AND s.cover_hash IS NOT NULL))",
+        )?;
+        stmt.query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    if incomplete.is_empty() {
+        return Ok(0);
+    }
+    finalize_albums(conn, &incomplete, &[])?;
+    Ok(incomplete.len())
+}
+
 pub fn prune_stale(
     conn: &mut Connection,
+    library_id: i64,
     generation: i64,
     scan_start: i64,
 ) -> Result<usize, ApiError> {
     let stale: Vec<String> = {
-        let mut stmt =
-            conn.prepare("SELECT id FROM songs WHERE seen_gen < ?1 AND indexed_at < ?2")?;
-        stmt.query_map(params![generation, scan_start], |r| r.get(0))?
+        let mut stmt = conn.prepare(
+            "SELECT id FROM songs WHERE library_id = ?3 AND seen_gen < ?1 AND indexed_at < ?2",
+        )?;
+        stmt.query_map(params![generation, scan_start, library_id], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
     if stale.is_empty() {
         return Ok(0);
     }
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for id in &stale {
         fts_del(&tx, id)?;
         tx.execute("DELETE FROM songs WHERE id = ?1", [id])?;
@@ -563,16 +595,19 @@ pub fn prune_stale(
     Ok(stale.len())
 }
 
-pub fn known_files(conn: &Connection) -> rusqlite::Result<HashMap<String, (i64, i64, String)>> {
-    let mut stmt = conn.prepare("SELECT path, size, mtime, id FROM songs")?;
-    stmt.query_map([], |r| {
+pub fn known_files(
+    conn: &Connection,
+    library_id: i64,
+) -> rusqlite::Result<HashMap<String, (i64, i64, String)>> {
+    let mut stmt = conn.prepare("SELECT path, size, mtime, id FROM songs WHERE library_id = ?1")?;
+    stmt.query_map([library_id], |r| {
         Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
     })?
     .collect()
 }
 
 pub fn touch_seen(conn: &mut Connection, ids: &[String], generation: i64) -> Result<(), ApiError> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     {
         let mut stmt = tx.prepare("UPDATE songs SET seen_gen = ?1 WHERE id = ?2")?;
         for id in ids {

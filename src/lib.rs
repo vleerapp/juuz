@@ -34,7 +34,7 @@ use crate::state::AppState;
 
 pub struct Server {
     pub state: AppState,
-    _watcher: Option<scanner::watch::Watcher>,
+    _watcher: Option<scanner::watch::Supervisor>,
 }
 
 impl Server {
@@ -80,24 +80,29 @@ pub fn init(mut cfg: Config) -> Result<Server> {
     let crypto = Arc::new(Crypto::load_or_create(&cfg.secret_path())?);
     bootstrap_admin(&cfg, &db, &crypto)?;
 
-    clean_stale_uploads(&cfg.music_dir);
+    let conn = db.conn()?;
+    for library in db::libraries::list(&conn)? {
+        clean_stale_uploads(&library.path);
+    }
+    drop(conn);
 
     let live = live::Live::new();
-    let scanner = Scanner::new(db.clone(), live.clone(), cfg.music_dir.clone());
+    let scanner = Scanner::new(db.clone(), live.clone());
     if cfg.scan.on_start {
         scanner.start(false);
     }
 
-    let watcher = if cfg.scan.watch {
-        match scanner::watch::spawn(scanner.clone(), cfg.music_dir.clone()) {
-            Ok(w) => Some(w),
-            Err(e) => {
-                tracing::warn!("file watcher disabled: {e:#}");
-                None
-            }
+    let watcher = match scanner::watch::spawn(
+        scanner.clone(),
+        db.clone(),
+        cfg.scan.watch,
+        cfg.art_cache_dir(),
+    ) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            tracing::warn!("library supervisor failed to start: {e:#}");
+            None
         }
-    } else {
-        None
     };
 
     let (omm_client, omm_handle) = if cfg.omm.enabled {

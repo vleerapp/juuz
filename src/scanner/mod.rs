@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
+use crate::db::libraries::{self, Library};
 use crate::db::{Db, now, now_ms};
 use crate::error::ApiError;
 use crate::live::Live;
@@ -27,7 +28,6 @@ pub struct Scanner {
     count: Arc<AtomicU64>,
     index_lock: Arc<Mutex<()>>,
     live: Live,
-    root: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -86,11 +86,10 @@ fn walk(root: &Path) -> Vec<Walked> {
 }
 
 impl Scanner {
-    pub fn new(db: Db, live: Live, root: PathBuf) -> Scanner {
+    pub fn new(db: Db, live: Live) -> Scanner {
         Scanner {
             db,
             live,
-            root,
             running: Arc::new(AtomicBool::new(false)),
             count: Arc::new(AtomicU64::new(0)),
             index_lock: Arc::new(Mutex::new(())),
@@ -118,11 +117,15 @@ impl Scanner {
     }
 
     pub fn start(&self, full: bool) -> bool {
+        self.start_library(None, full)
+    }
+
+    pub fn start_library(&self, library: Option<i64>, full: bool) -> bool {
         if self.running.load(Ordering::Acquire) {
             return false;
         }
         let scanner = self.clone();
-        tokio::task::spawn_blocking(move || match scanner.scan_blocking(full) {
+        tokio::task::spawn_blocking(move || match scanner.scan_library_blocking(library, full) {
             Ok(Some(s)) => tracing::info!(
                 "scan finished: {} scanned, {} pruned, {} failed",
                 s.scanned,
@@ -136,6 +139,14 @@ impl Scanner {
     }
 
     pub fn scan_blocking(&self, full: bool) -> Result<Option<Summary>, ApiError> {
+        self.scan_library_blocking(None, full)
+    }
+
+    pub fn scan_library_blocking(
+        &self,
+        library: Option<i64>,
+        full: bool,
+    ) -> Result<Option<Summary>, ApiError> {
         if self
             .running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -144,13 +155,13 @@ impl Scanner {
             return Ok(None);
         }
         self.live.notify();
-        let result = self.run_scan(full);
+        let result = self.run_scan(library, full);
         self.running.store(false, Ordering::Release);
         self.live.notify();
         result.map(Some)
     }
 
-    fn run_scan(&self, full: bool) -> Result<Summary, ApiError> {
+    fn run_scan(&self, only: Option<i64>, full: bool) -> Result<Summary, ApiError> {
         self.count.store(0, Ordering::Release);
         let mut conn = self.db.conn()?;
         let scan_start = now_ms();
@@ -158,74 +169,25 @@ impl Scanner {
         let generation: i64 =
             conn.query_row("SELECT gen FROM scan_state WHERE id = 1", [], |r| r.get(0))?;
 
-        let root = self.root.clone();
-        let ctx = FolderCtx {
-            root: root.clone(),
-            generation,
-        };
         let mut summary = Summary::default();
-
-        'index: {
-            if !root.is_dir() {
-                tracing::warn!("music dir {} is not accessible, skipping", root.display());
-                break 'index;
+        for library in libraries::list(&conn)? {
+            if only.is_some_and(|id| id != library.id) {
+                continue;
             }
-
-            let files = walk(&root);
-            let known = index::known_files(&conn)?;
-            if files.is_empty() && !known.is_empty() {
-                tracing::warn!(
-                    "no audio files found in {} but {} are indexed; skipping to avoid mass deletion",
-                    root.display(),
-                    known.len()
-                );
-                break 'index;
-            }
-
-            let mut unchanged = Vec::new();
-            let mut changed = Vec::new();
-            for f in &files {
-                match known.get(f.path.to_string_lossy().as_ref()) {
-                    Some((size, mtime, id)) if !full && *size == f.size && *mtime == f.mtime => {
-                        unchanged.push(id.clone())
-                    }
-                    _ => changed.push(f),
-                }
-            }
-            index::touch_seen(&mut conn, &unchanged, generation)?;
-            self.count
-                .fetch_add(unchanged.len() as u64, Ordering::AcqRel);
-
-            let mut albums = HashSet::new();
-            let mut moves = Vec::new();
-            for chunk in changed.chunks(CHUNK) {
-                let results: Vec<Result<TrackInfo, String>> = chunk
-                    .par_iter()
-                    .map(|f| {
-                        read_track(&f.path).map_err(|e| format!("{}: {e:#}", f.path.display()))
-                    })
-                    .collect();
-                let mut tracks = Vec::with_capacity(results.len());
-                for r in results {
-                    match r {
-                        Ok(t) => tracks.push(t),
-                        Err(e) => {
-                            tracing::warn!("skipping unreadable file {e}");
-                            summary.failed += 1;
-                        }
-                    }
-                }
-                let outcome = index::upsert_tracks(&mut conn, &ctx, &tracks)?;
-                albums.extend(outcome.albums);
-                moves.extend(outcome.album_moves);
-                summary.scanned += tracks.len() as u64;
-                self.count.fetch_add(chunk.len() as u64, Ordering::AcqRel);
-                self.live.notify();
-            }
-            index::finalize_albums(&mut conn, &albums, &moves)?;
-            summary.pruned += index::prune_stale(&mut conn, generation, scan_start)?;
+            self.scan_library(
+                &mut conn,
+                &library,
+                generation,
+                scan_start,
+                full,
+                &mut summary,
+            )?;
         }
 
+        let repaired = index::repair_albums(&mut conn)?;
+        if repaired > 0 {
+            tracing::info!("repaired {repaired} albums with missing artist or cover");
+        }
         index::prune_orphans(&mut conn)?;
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM songs", [], |r| r.get(0))?;
         conn.execute(
@@ -235,17 +197,97 @@ impl Scanner {
         Ok(summary)
     }
 
+    fn scan_library(
+        &self,
+        conn: &mut rusqlite::Connection,
+        library: &Library,
+        generation: i64,
+        scan_start: i64,
+        full: bool,
+        summary: &mut Summary,
+    ) -> Result<(), ApiError> {
+        let root = library.path.clone();
+        let ctx = FolderCtx {
+            root: root.clone(),
+            generation,
+            library_id: library.id,
+        };
+
+        if !root.is_dir() || root.as_os_str().is_empty() {
+            tracing::warn!(
+                "library '{}' at {} is not accessible, skipping",
+                library.name,
+                root.display()
+            );
+            return Ok(());
+        }
+
+        let files = walk(&root);
+        let known = index::known_files(conn, library.id)?;
+        if files.is_empty() && !known.is_empty() {
+            tracing::warn!(
+                "no audio files found in {} but {} are indexed; skipping to avoid mass deletion",
+                root.display(),
+                known.len()
+            );
+            return Ok(());
+        }
+
+        let mut unchanged = Vec::new();
+        let mut changed = Vec::new();
+        for f in &files {
+            match known.get(f.path.to_string_lossy().as_ref()) {
+                Some((size, mtime, id)) if !full && *size == f.size && *mtime == f.mtime => {
+                    unchanged.push(id.clone())
+                }
+                _ => changed.push(f),
+            }
+        }
+        index::touch_seen(conn, &unchanged, generation)?;
+        self.count
+            .fetch_add(unchanged.len() as u64, Ordering::AcqRel);
+
+        let mut albums = HashSet::new();
+        let mut moves = Vec::new();
+        for chunk in changed.chunks(CHUNK) {
+            let results: Vec<Result<TrackInfo, String>> = chunk
+                .par_iter()
+                .map(|f| read_track(&f.path).map_err(|e| format!("{}: {e:#}", f.path.display())))
+                .collect();
+            let mut tracks = Vec::with_capacity(results.len());
+            for r in results {
+                match r {
+                    Ok(t) => tracks.push(t),
+                    Err(e) => {
+                        tracing::warn!("skipping unreadable file {e}");
+                        summary.failed += 1;
+                    }
+                }
+            }
+            let outcome = index::upsert_tracks(conn, &ctx, &tracks)?;
+            index::finalize_albums(conn, &outcome.albums, &outcome.album_moves)?;
+            albums.extend(outcome.albums);
+            moves.extend(outcome.album_moves);
+            summary.scanned += tracks.len() as u64;
+            self.count.fetch_add(chunk.len() as u64, Ordering::AcqRel);
+            self.live.notify();
+        }
+        index::finalize_albums(conn, &albums, &moves)?;
+        summary.pruned += index::prune_stale(conn, library.id, generation, scan_start)?;
+        Ok(())
+    }
+
     pub fn index_file(&self, path: &Path) -> Result<String, ApiError> {
         let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db.conn()?;
-        if !path.starts_with(&self.root) {
-            return Err(ApiError::generic("file is outside the music dir"));
-        }
+        let library = libraries::containing(&conn, path)?
+            .ok_or_else(|| ApiError::generic("file is outside every library"))?;
         let generation: i64 =
             conn.query_row("SELECT gen FROM scan_state WHERE id = 1", [], |r| r.get(0))?;
         let ctx = FolderCtx {
-            root: self.root.clone(),
+            root: library.path,
             generation,
+            library_id: library.id,
         };
         let track = read_track(path).map_err(|e| {
             tracing::warn!("index_file {}: {e:#}", path.display());
@@ -261,8 +303,8 @@ impl Scanner {
             .ok_or_else(|| ApiError::generic("file already indexed from another path"))
     }
 
-    pub fn predict_song_id(&self, target: &Path, t: &TrackInfo) -> String {
-        let key = grouping::album_key(&index::rel_dir(&self.root, target), t);
+    pub fn predict_song_id(&self, library: &Library, target: &Path, t: &TrackInfo) -> String {
+        let key = index::scoped_album_key(library.id, &index::rel_dir(&library.path, target), t);
         crate::ids::song(&t.audio_hash, &key.id)
     }
 
@@ -302,7 +344,7 @@ impl Scanner {
         if ids.is_empty() {
             return Ok(0);
         }
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for id in &ids {
             index::fts_del(&tx, id)?;
             tx.execute("DELETE FROM songs WHERE id = ?1", [id])?;
