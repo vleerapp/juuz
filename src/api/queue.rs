@@ -24,9 +24,9 @@ async fn save(ctx: Ctx, by_index: bool) -> ApiResult {
     ctx.st
         .db
         .run(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             for id in &ids {
-                if kind_of(&tx, id)? != Some(ItemKind::Song) {
+                if kind_of_for(&tx, &uid, id)? != Some(ItemKind::Song) {
                     return Err(ApiError::not_found("song"));
                 }
             }
@@ -176,7 +176,7 @@ pub async fn create_bookmark(ctx: Ctx) -> ApiResult {
     ctx.st
         .db
         .run(move |c| {
-            if kind_of(c, &id)? != Some(ItemKind::Song) {
+            if kind_of_for(c, &uid, &id)? != Some(ItemKind::Song) {
                 return Err(ApiError::not_found("song"));
             }
             c.execute(

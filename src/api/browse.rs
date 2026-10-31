@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use super::model::*;
 use super::{ApiResult, Ctx, ok};
+use crate::db::libraries::{self, visible};
 use crate::error::ApiError;
 use crate::util::strip_article;
 
@@ -10,15 +11,38 @@ fn articles() -> String {
     IGNORED_ARTICLES.join(" ")
 }
 
-pub const FOLDER_IDS: [i64; 1] = [1];
-
-pub async fn get_music_folders(_ctx: Ctx) -> ApiResult {
-    ok(json!({"musicFolders": {"musicFolder": [{"id": FOLDER_IDS[0], "name": "Music"}]}}))
+pub async fn get_music_folders(ctx: Ctx) -> ApiResult {
+    let uid = ctx.user().id.clone();
+    let folders = ctx
+        .st
+        .db
+        .run(move |c| {
+            Ok(libraries::visible_to(c, &uid)?
+                .into_iter()
+                .map(|l| json!({"id": l.id, "name": l.name}))
+                .collect::<Vec<_>>())
+        })
+        .await?;
+    ok(json!({"musicFolders": {"musicFolder": folders}}))
 }
 
-fn indexed_artists(conn: &Connection, uid: &str) -> Result<Vec<Value>, ApiError> {
-    let tail = "WHERE EXISTS (SELECT 1 FROM album_artists aa WHERE aa.artist_id = ar.id)";
-    let mut rows = artists_where(conn, uid, tail, vec![])?;
+pub fn folder_filter(ctx: &Ctx) -> Result<Option<i64>, ApiError> {
+    ctx.params.int("musicFolderId")
+}
+
+fn indexed_artists(
+    conn: &Connection,
+    uid: &str,
+    folder: Option<i64>,
+) -> Result<Vec<Value>, ApiError> {
+    let in_folder = folder
+        .map(|f| format!(" AND al.library_id = {f}"))
+        .unwrap_or_default();
+    let tail = format!(
+        "WHERE EXISTS (SELECT 1 FROM album_artists aa JOIN albums al ON al.id = aa.album_id
+            WHERE aa.artist_id = ar.id{in_folder})"
+    );
+    let mut rows = artists_where(conn, uid, &tail, vec![])?;
     let arts: Vec<&str> = IGNORED_ARTICLES.to_vec();
     rows.sort_by_cached_key(|a| {
         strip_article(a.sort_name.as_deref().unwrap_or(&a.name), &arts).to_lowercase()
@@ -46,12 +70,18 @@ fn indexed_artists(conn: &Connection, uid: &str) -> Result<Vec<Value>, ApiError>
 
 pub async fn get_artists(ctx: Ctx) -> ApiResult {
     let uid = ctx.user().id.clone();
-    let index = ctx.st.db.run(move |c| indexed_artists(c, &uid)).await?;
+    let folder = folder_filter(&ctx)?;
+    let index = ctx
+        .st
+        .db
+        .run(move |c| indexed_artists(c, &uid, folder))
+        .await?;
     ok(json!({"artists": {"ignoredArticles": articles(), "index": index}}))
 }
 
 pub async fn get_indexes(ctx: Ctx) -> ApiResult {
     let uid = ctx.user().id.clone();
+    let folder = folder_filter(&ctx)?;
     let (index, modified) = ctx
         .st
         .db
@@ -61,7 +91,10 @@ pub async fn get_indexes(ctx: Ctx) -> ApiResult {
                 [],
                 |r| r.get(0),
             )?;
-            Ok((indexed_artists(c, &uid)?, modified.unwrap_or(0) * 1000))
+            Ok((
+                indexed_artists(c, &uid, folder)?,
+                modified.unwrap_or(0) * 1000,
+            ))
         })
         .await?;
     ok(
@@ -170,7 +203,7 @@ pub async fn get_music_directory(ctx: Ctx) -> ApiResult {
         .st
         .db
         .run(move |c| {
-            match kind_of(c, &id)? {
+            match kind_of_for(c, &uid, &id)? {
                 Some(ItemKind::Artist) => {
                     let artist = artists_by_ids(c, &uid, std::slice::from_ref(&id))?
                         .pop()
@@ -224,17 +257,21 @@ fn strip_nulls(v: Value) -> Value {
 }
 
 pub async fn get_genres(ctx: Ctx) -> ApiResult {
+    let uid = ctx.user().id.clone();
     let list = ctx
         .st
         .db
-        .run(|c| {
-            let mut stmt = c.prepare(
+        .run(move |c| {
+            let mut stmt = c.prepare(concat!(
                 "SELECT g.name, COUNT(DISTINCT sg.song_id), COUNT(DISTINCT s.album_id)
                  FROM genres g JOIN song_genres sg ON sg.genre_id = g.id JOIN songs s ON s.id = sg.song_id
-                 GROUP BY g.id ORDER BY g.name COLLATE NOCASE",
-            )?;
+                 WHERE ",
+                visible!("s.library_id"),
+                "
+                 GROUP BY g.id ORDER BY g.name COLLATE NOCASE"
+            ))?;
             let rows = stmt
-                .query_map([], |r| {
+                .query_map([&uid], |r| {
                     Ok(json!({"value": r.get::<_, String>(0)?, "songCount": r.get::<_, i64>(1)?,
                         "albumCount": r.get::<_, i64>(2)?}))
                 })?
@@ -310,7 +347,7 @@ async fn similar(ctx: Ctx, key: &str) -> ApiResult {
         .st
         .db
         .run(move |c| {
-            let source = match kind_of(c, &id)? {
+            let source = match kind_of_for(c, &uid, &id)? {
                 Some(ItemKind::Song) => "s.id = ?1",
                 Some(ItemKind::Album) => "s.album_id = ?1",
                 Some(ItemKind::Artist) => "s.id IN (SELECT song_id FROM song_artists WHERE artist_id = ?1)",

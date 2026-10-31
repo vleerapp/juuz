@@ -1,8 +1,9 @@
 use serde_json::json;
 
-use super::model::kind_of;
+use super::model::kind_of_for;
 use super::{ApiResult, Ctx, empty, ok};
 use crate::db::now;
+use crate::db::users::User;
 use crate::error::ApiError;
 use crate::state::NowPlaying;
 use crate::util::iso;
@@ -24,9 +25,9 @@ async fn set_starred(ctx: Ctx, starred: bool) -> ApiResult {
     ctx.st
         .db
         .run(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             for id in &ids {
-                if kind_of(&tx, id)?.is_none() {
+                if kind_of_for(&tx, &uid, id)?.is_none() {
                     return Err(ApiError::not_found("item"));
                 }
                 if starred {
@@ -69,7 +70,7 @@ pub async fn set_rating(ctx: Ctx) -> ApiResult {
     ctx.st
         .db
         .run(move |c| {
-            if kind_of(c, &id)?.is_none() {
+            if kind_of_for(c, &uid, &id)?.is_none() {
                 return Err(ApiError::not_found("item"));
             }
             if rating == 0 {
@@ -144,19 +145,33 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
         "scrobble from {player} submission={submission} songs={}",
         ids.len()
     );
+    record(&ctx.st, &user, ids, times, submission, player, true).await?;
+    empty()
+}
 
+pub async fn record(
+    st: &crate::state::AppState,
+    user: &User,
+    ids: Vec<String>,
+    times: Vec<i64>,
+    submission: bool,
+    player: String,
+    synthetic: bool,
+) -> Result<(), ApiError> {
     if !submission {
         let id = ids[0].clone();
-        let exists = ctx
-            .st
+        let exists = st
             .db
-            .run(move |c| Ok(kind_of(c, &id)? == Some(super::model::ItemKind::Song)))
+            .run({
+                let uid = user.id.clone();
+                move |c| Ok(kind_of_for(c, &uid, &id)? == Some(super::model::ItemKind::Song))
+            })
             .await?;
         if !exists {
             return Err(ApiError::not_found("song"));
         }
-        super::lastfm::forward(&ctx.st, &user, vec![ids[0].clone()], Vec::new(), false);
-        let mut playing = ctx.st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
+        super::lastfm::forward(st, user, vec![ids[0].clone()], Vec::new(), false);
+        let mut playing = st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
         crate::state::prune_now_playing(&mut playing, &user.id);
         playing.insert(
             (user.id.clone(), player.clone()),
@@ -169,23 +184,23 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
                 until: now() + crate::state::NOW_PLAYING_TTL,
             },
         );
-        ctx.st.live.notify();
-        return empty();
+        drop(playing);
+        st.live.notify();
+        return Ok(());
     }
 
     let uid = user.id.clone();
-    let record = user.scrobbling;
-    let fresh = ctx
-        .st
+    let recording = user.scrobbling;
+    let fresh = st
         .db
         .run(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut fresh = Vec::new();
             for (i, id) in ids.iter().enumerate() {
-                if kind_of(&tx, id)? != Some(super::model::ItemKind::Song) {
+                if kind_of_for(&tx, &uid, id)? != Some(super::model::ItemKind::Song) {
                     return Err(ApiError::not_found("song"));
                 }
-                if !record {
+                if !recording {
                     continue;
                 }
                 let at = times
@@ -194,6 +209,9 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
                     .filter(|t| *t > 0)
                     .unwrap_or_else(now);
                 if record_play(&tx, &uid, id, at)? {
+                    if synthetic {
+                        crate::db::events::insert_listen(&tx, &uid, id, at * 1000)?;
+                    }
                     fresh.push((id.clone(), at * 1000));
                 }
             }
@@ -202,18 +220,19 @@ pub async fn scrobble(ctx: Ctx) -> ApiResult {
         })
         .await?;
     let (forward_ids, forward_times) = fresh.into_iter().unzip();
-    super::lastfm::forward(&ctx.st, &user, forward_ids, forward_times, true);
-    ctx.st
-        .now_playing
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&(user.id.clone(), player));
-    ctx.st.live.notify();
-    empty()
+    super::lastfm::forward(st, user, forward_ids, forward_times, true);
+    if synthetic {
+        st.now_playing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(user.id.clone(), player));
+        st.live.notify();
+    }
+    Ok(())
 }
 
 pub async fn start_scan(ctx: Ctx) -> ApiResult {
-    ctx.require_admin()?;
+    ctx.require(User::can_scan)?;
     let full = ctx.params.bool("full").unwrap_or(false);
     ctx.st.scanner.start(full);
     scan_status(ctx).await

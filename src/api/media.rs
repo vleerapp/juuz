@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use super::model::{ItemKind, kind_of};
+use super::model::{ItemKind, kind_of_for};
 use super::{ApiResult, Ctx, Reply, ok};
 use crate::error::ApiError;
 use crate::lyrics;
@@ -28,7 +28,13 @@ struct SongFile {
     suffix: String,
 }
 
-fn song_file(conn: &Connection, id: &str) -> Result<SongFile, ApiError> {
+fn song_file(conn: &Connection, uid: Option<&str>, id: &str) -> Result<SongFile, ApiError> {
+    if let Some(uid) = uid
+        && let Some(library) = crate::db::libraries::song_library(conn, id)?
+        && !crate::db::libraries::can_access(conn, uid, library)?
+    {
+        return Err(ApiError::not_found("song"));
+    }
     let song = conn
         .query_row(
             "SELECT path, content_type, title, suffix, mtime, bitrate, duration_ms FROM songs WHERE id = ?1",
@@ -174,13 +180,25 @@ pub async fn serve_song(
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
     let id = id.to_string();
-    let song = st.db.run(move |c| song_file(c, &id)).await?;
+    let song = st.db.run(move |c| song_file(c, None, &id)).await?;
+    serve_file(headers, &song.path, &song.content_type, None).await
+}
+
+pub async fn serve_song_as(
+    st: &AppState,
+    uid: &str,
+    id: &str,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let (id, uid) = (id.to_string(), uid.to_string());
+    let song = st.db.run(move |c| song_file(c, Some(&uid), &id)).await?;
     serve_file(headers, &song.path, &song.content_type, None).await
 }
 
 async fn song_for(ctx: &Ctx) -> Result<SongFile, ApiError> {
     let id = ctx.params.req("id")?.to_string();
-    ctx.st.db.run(move |c| song_file(c, &id)).await
+    let uid = ctx.user().id.clone();
+    ctx.st.db.run(move |c| song_file(c, Some(&uid), &id)).await
 }
 
 fn note_streaming(ctx: &Ctx, song: &SongFile) {
@@ -378,8 +396,12 @@ fn album_art(conn: &Connection, album_id: &str) -> rusqlite::Result<Option<(Stri
     Ok(song.map(|p| (hash, ArtSource::Embedded(PathBuf::from(p)))))
 }
 
-fn resolve_art(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, ArtSource)>> {
-    match kind_of(conn, id)? {
+fn resolve_art(
+    conn: &Connection,
+    uid: &str,
+    id: &str,
+) -> rusqlite::Result<Option<(String, ArtSource)>> {
+    match kind_of_for(conn, uid, id)? {
         Some(ItemKind::Song) => {
             let row: Option<(String, Option<String>, String)> = conn
                 .query_row(
@@ -430,11 +452,55 @@ fn resolve_art(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, 
                 )
                 .optional()?;
             match song {
-                Some(s) => resolve_art(conn, &s),
+                Some(s) => resolve_art(conn, uid, &s),
                 None => Ok(None),
             }
         }
         None => Ok(None),
+    }
+}
+
+pub fn warm_thumbnails(db: &crate::db::Db, cache_dir: &Path, sizes: &[u32]) {
+    let ids: Vec<String> = {
+        let Ok(conn) = db.conn() else { return };
+        let Ok(mut stmt) = conn.prepare("SELECT id FROM albums WHERE cover_hash IS NOT NULL")
+        else {
+            return;
+        };
+        let Ok(rows) = stmt.query_map([], |r| r.get(0)) else {
+            return;
+        };
+        rows.flatten().collect()
+    };
+    for id in ids {
+        let art = db
+            .conn()
+            .ok()
+            .and_then(|conn| album_art(&conn, &id).ok().flatten());
+        let Some((hash, source)) = art else { continue };
+        let missing: Vec<u32> = sizes
+            .iter()
+            .copied()
+            .filter(|size| !cache_dir.join(format!("{hash}_{size}.jpg")).exists())
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let Some(original) = load_art(&source) else {
+            continue;
+        };
+        if std::fs::create_dir_all(cache_dir).is_err() {
+            return;
+        }
+        for size in missing {
+            let Some(bytes) = resized(&original, size) else {
+                continue;
+            };
+            let tmp = cache_dir.join(format!(".{hash}_{size}.tmp"));
+            if std::fs::write(&tmp, &bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, cache_dir.join(format!("{hash}_{size}.jpg")));
+            }
+        }
     }
 }
 
@@ -495,9 +561,18 @@ fn mime_of(bytes: &[u8]) -> &'static str {
 pub async fn get_cover_art(ctx: Ctx) -> ApiResult {
     let id = ctx.params.req("id")?.to_string();
     let size = ctx.params.int("size")?.map(|s| s.clamp(16, 2400) as u32);
-    let cache_dir = ctx.st.cfg.art_cache_dir();
+    let uid = ctx.user().id.clone();
+    Ok(Reply::Raw(cover_response(&ctx.st, uid, id, size).await?))
+}
 
-    let found = ctx.st.db.run(move |c| Ok(resolve_art(c, &id)?)).await?;
+pub async fn cover_response(
+    st: &AppState,
+    uid: String,
+    id: String,
+    size: Option<u32>,
+) -> Result<Response, ApiError> {
+    let cache_dir = st.cfg.art_cache_dir();
+    let found = st.db.run(move |c| Ok(resolve_art(c, &uid, &id)?)).await?;
     let (hash, source) = found.ok_or_else(|| ApiError::not_found("cover art"))?;
 
     let resp = tokio::task::spawn_blocking(move || -> Result<Response, ApiError> {
@@ -538,7 +613,7 @@ pub async fn get_cover_art(ctx: Ctx) -> ApiResult {
     })
     .await
     .map_err(|_| ApiError::generic("internal server error"))??;
-    Ok(Reply::Raw(resp))
+    Ok(resp)
 }
 
 pub async fn get_avatar(_: Ctx) -> ApiResult {
@@ -569,6 +644,15 @@ pub async fn get_lyrics_by_song_id(ctx: Ctx) -> ApiResult {
 }
 
 async fn find_lyrics(ctx: &Ctx, id: String) -> Result<Option<lyrics::Found>, ApiError> {
+    let (uid, check) = (ctx.user().id.clone(), id.clone());
+    let allowed = ctx
+        .st
+        .db
+        .run(move |c| Ok(crate::db::libraries::can_access_song(c, &uid, &check)?))
+        .await?;
+    if !allowed {
+        return Ok(None);
+    }
     let (db, client) = (ctx.st.db.clone(), ctx.st.lyrics.clone());
     tokio::task::spawn_blocking(move || lyrics::find(&db, &client, &id))
         .await
@@ -581,14 +665,17 @@ pub async fn get_lyrics(ctx: Ctx) -> ApiResult {
     if title.is_empty() {
         return ok(json!({"lyrics": {}}));
     }
+    let uid = ctx.user().id.clone();
     let id = ctx
         .st
         .db
         .run(move |c| {
             Ok(c.query_row(
                 "SELECT id FROM songs WHERE title = ?1 COLLATE NOCASE
-                   AND (?2 = '' OR display_artist LIKE '%' || ?2 || '%' COLLATE NOCASE) LIMIT 1",
-                [&title, &artist],
+                   AND (?2 = '' OR display_artist LIKE '%' || ?2 || '%' COLLATE NOCASE)
+                   AND (library_id IN (SELECT library_id FROM user_libraries WHERE user_id = ?3)
+                        OR EXISTS (SELECT 1 FROM users WHERE id = ?3 AND admin_role = 1)) LIMIT 1",
+                [&title, &artist, &uid],
                 |r| r.get::<_, String>(0),
             )
             .optional()?)

@@ -21,6 +21,9 @@ fn album_list_tail(ctx: &Ctx) -> Result<(String, Vec<Sql>), ApiError> {
     let offset = p.int_or("offset", 0)?.max(0);
     let mut wheres: Vec<String> = Vec::new();
     let mut args: Vec<Sql> = Vec::new();
+    if let Some(folder) = super::browse::folder_filter(ctx)? {
+        wheres.push(format!("al.library_id = {folder}"));
+    }
 
     let order = match kind {
         "random" => "RANDOM()".to_string(),
@@ -118,6 +121,9 @@ pub async fn get_random_songs(ctx: Ctx) -> ApiResult {
     let size = p.int_or("size", 10)?.clamp(0, 500);
     let mut wheres: Vec<String> = Vec::new();
     let mut args: Vec<Sql> = Vec::new();
+    if let Some(folder) = super::browse::folder_filter(&ctx)? {
+        wheres.push(format!("s.library_id = {folder}"));
+    }
     if let Some(g) = p.get("genre").filter(|g| !g.is_empty()) {
         wheres.push(
             "s.id IN (SELECT sg.song_id FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
@@ -158,8 +164,11 @@ pub async fn get_songs_by_genre(ctx: Ctx) -> ApiResult {
     let count = p.int_or("count", 10)?.clamp(0, 500);
     let offset = p.int_or("offset", 0)?.max(0);
     let args = vec![sv(&genre)];
+    let in_folder = super::browse::folder_filter(&ctx)?
+        .map(|f| format!("s.library_id = {f} AND "))
+        .unwrap_or_default();
     let tail = format!(
-        "WHERE s.id IN (SELECT sg.song_id FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
+        "WHERE {in_folder}s.id IN (SELECT sg.song_id FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
             WHERE g.name = ? COLLATE NOCASE)
          ORDER BY s.title COLLATE NOCASE LIMIT {count} OFFSET {offset}"
     );

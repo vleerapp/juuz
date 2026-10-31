@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::model::{songs_by_ids, songs_json};
 use super::{ApiResult, Ctx, Reply, media, ok};
+use crate::db::users::User;
 use crate::error::ApiError;
 use crate::jukebox::{Outputs, Snapshot};
 use crate::state::AppState;
@@ -74,12 +75,17 @@ pub async fn control(ctx: Ctx) -> ApiResult {
             return ok(json!({"jukeboxPlaylist": playlist}));
         }
         "status" => jb.snapshot().await,
-        "set" => jb.set(ids(&ctx)).await?,
+        "set" => {
+            let ids = ids(&ctx);
+            visible_songs(&ctx, &ids).await?;
+            jb.set(ids).await?
+        }
         "add" => {
             let ids = ids(&ctx);
             if ids.is_empty() {
                 return Err(ApiError::missing("id"));
             }
+            visible_songs(&ctx, &ids).await?;
             jb.add(ids).await?
         }
         "clear" => jb.clear().await?,
@@ -127,14 +133,29 @@ pub async fn get_outputs(ctx: Ctx) -> ApiResult {
     ok(outputs_json(&ctx.st.jukebox.outputs().await))
 }
 
+async fn visible_songs(ctx: &Ctx, ids: &[String]) -> Result<(), ApiError> {
+    let (uid, ids) = (ctx.user().id.clone(), ids.to_vec());
+    ctx.st
+        .db
+        .run(move |c| {
+            for id in &ids {
+                if !crate::db::libraries::can_access_song(c, &uid, id)? {
+                    return Err(ApiError::not_found("song"));
+                }
+            }
+            Ok(())
+        })
+        .await
+}
+
 pub async fn scan_outputs(ctx: Ctx) -> ApiResult {
-    ctx.require_admin()?;
+    ctx.require(User::can_server)?;
     ctx.st.jukebox.scan().await?;
     ok(outputs_json(&ctx.st.jukebox.outputs().await))
 }
 
 pub async fn set_output(ctx: Ctx) -> ApiResult {
-    ctx.require_admin()?;
+    ctx.require(User::can_server)?;
     let id = ctx.params.get("id").filter(|s| !s.is_empty());
     let url = ctx.params.get("url").filter(|s| !s.is_empty());
     ctx.st.jukebox.select(id, url).await?;

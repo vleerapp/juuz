@@ -1,8 +1,8 @@
 use serde_json::json;
 
-use super::browse::FOLDER_IDS;
 use super::{ApiResult, Ctx, empty, ok};
 use crate::auth;
+use crate::db::libraries;
 use crate::db::users::{self, RoleUpdate, User};
 use crate::error::ApiError;
 use crate::params::Params;
@@ -20,10 +20,22 @@ fn roles_from(p: &Params) -> RoleUpdate {
         podcast: p.bool("podcastRole"),
         share: p.bool("shareRole"),
         jukebox: p.bool("jukeboxRole"),
+        scan: p.bool("juuzScanRole"),
+        server: p.bool("juuzServerRole"),
+        radio: p.bool("juuzRadioRole"),
+        delete: p.bool("juuzDeleteRole"),
+        library: p.bool("juuzLibraryRole"),
+        catalogue: p.bool("juuzCatalogueRole"),
+        keys: p.bool("juuzKeysRole"),
         scrobbling: p.bool("scrobblingEnabled"),
         max_bit_rate: p.get("maxBitRate").and_then(|v| v.parse().ok()),
         email: p.get("email").map(str::to_string),
     }
+}
+
+fn folders_from(p: &Params) -> Option<Vec<i64>> {
+    let ids: Vec<&str> = p.all("musicFolderId");
+    (!ids.is_empty()).then(|| ids.iter().filter_map(|v| v.parse().ok()).collect())
 }
 
 fn require_password_auth(ctx: &Ctx) -> Result<(), ApiError> {
@@ -56,7 +68,11 @@ pub async fn get_user(ctx: Ctx) -> ApiResult {
         .db
         .run(move |c| {
             let u = users::by_name(c, &target)?.ok_or_else(|| ApiError::not_found("user"))?;
-            Ok(u.to_json(&FOLDER_IDS))
+            let folders = crate::db::libraries::visible_to(c, &u.id)?
+                .into_iter()
+                .map(|l| l.id)
+                .collect::<Vec<_>>();
+            Ok(u.to_json(&folders))
         })
         .await?;
     ok(json!({"user": user}))
@@ -68,10 +84,15 @@ pub async fn get_users(ctx: Ctx) -> ApiResult {
         .st
         .db
         .run(|c| {
-            Ok(users::list(c)?
-                .iter()
-                .map(|u| u.to_json(&FOLDER_IDS))
-                .collect::<Vec<_>>())
+            let mut out = Vec::new();
+            for u in users::list(c)? {
+                let folders = crate::db::libraries::visible_to(c, &u.id)?
+                    .into_iter()
+                    .map(|l| l.id)
+                    .collect::<Vec<_>>();
+                out.push(u.to_json(&folders));
+            }
+            Ok(out)
         })
         .await?;
     ok(json!({"users": {"user": list}}))
@@ -82,6 +103,7 @@ pub async fn create_user(ctx: Ctx) -> ApiResult {
     let name = ctx.params.req("username")?.to_string();
     let password = decode(ctx.params.req("password")?)?;
     let roles = roles_from(&ctx.params);
+    let folders = folders_from(&ctx.params);
 
     let (hash, secret) = auth::credentials(&ctx.st.crypto, &password).await?;
 
@@ -90,6 +112,9 @@ pub async fn create_user(ctx: Ctx) -> ApiResult {
         .run(move |c| {
             let id = users::create(c, &name, &hash, Some(&secret), false)?;
             users::update_roles(c, &id, &roles)?;
+            if let Some(folders) = folders {
+                libraries::set_access(c, &id, &folders)?;
+            }
             Ok(())
         })
         .await?;
@@ -100,6 +125,7 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
     ctx.require_admin()?;
     let name = ctx.params.req("username")?.to_string();
     let roles = roles_from(&ctx.params);
+    let folders = folders_from(&ctx.params);
     let me = ctx.user().clone();
     if ctx.params.has("password") {
         require_password_auth(&ctx)?;
@@ -120,6 +146,9 @@ pub async fn update_user(ctx: Ctx) -> ApiResult {
                 return Err(ApiError::forbidden("you cannot remove your own admin role"));
             }
             users::update_roles(c, &user.id, &roles)?;
+            if let Some(folders) = folders {
+                libraries::set_access(c, &user.id, &folders)?;
+            }
             if let Some((hash, sealed)) = credentials {
                 users::set_password(c, &user.id, &hash, Some(&sealed))?;
                 users::delete_sessions(c, &user.id)?;
@@ -187,6 +216,7 @@ async fn key_owner(ctx: &Ctx) -> Result<User, ApiError> {
 }
 
 pub async fn create_api_key(ctx: Ctx) -> ApiResult {
+    ctx.require(User::can_keys)?;
     require_password_auth(&ctx)?;
     let owner = key_owner(&ctx).await?;
     let label = ctx.params.get("name").unwrap_or("").to_string();
@@ -202,6 +232,7 @@ pub async fn create_api_key(ctx: Ctx) -> ApiResult {
 }
 
 pub async fn get_api_keys(ctx: Ctx) -> ApiResult {
+    ctx.require(User::can_keys)?;
     let owner = key_owner(&ctx).await?;
     let keys = ctx
         .st
@@ -216,6 +247,7 @@ pub async fn get_api_keys(ctx: Ctx) -> ApiResult {
 }
 
 pub async fn delete_api_key(ctx: Ctx) -> ApiResult {
+    ctx.require(User::can_keys)?;
     let owner = key_owner(&ctx).await?;
     let id = ctx.params.req("id")?.to_string();
     let removed = ctx

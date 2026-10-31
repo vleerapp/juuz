@@ -8,6 +8,7 @@ use super::media::serve_file;
 use super::model::*;
 use super::{ApiResult, Ctx, empty, ok};
 use crate::db::now;
+use crate::db::users::User;
 use crate::error::ApiError;
 use crate::ids;
 use crate::state::AppState;
@@ -147,7 +148,7 @@ pub async fn create_share(ctx: Ctx) -> ApiResult {
         .db
         .run(move |c| {
             for item in &items {
-                match kind_of(c, item)? {
+                match kind_of_for(c, &me.id, item)? {
                     None => return Err(ApiError::not_found("item")),
                     Some(ItemKind::Playlist) => {
                         let (owner, public): (String, bool) = c.query_row(
@@ -349,7 +350,7 @@ pub async fn get_radio_stations(ctx: Ctx) -> ApiResult {
 }
 
 pub async fn create_radio_station(ctx: Ctx) -> ApiResult {
-    ctx.require_admin()?;
+    ctx.require(User::can_radio)?;
     let url = ctx.params.req("streamUrl")?.to_string();
     let name = ctx.params.req("name")?.to_string();
     let home = ctx.params.get("homepageUrl").map(str::to_string);
@@ -367,7 +368,7 @@ pub async fn create_radio_station(ctx: Ctx) -> ApiResult {
 }
 
 pub async fn update_radio_station(ctx: Ctx) -> ApiResult {
-    ctx.require_admin()?;
+    ctx.require(User::can_radio)?;
     let id = ctx.params.req("id")?.to_string();
     let url = ctx.params.req("streamUrl")?.to_string();
     let name = ctx.params.req("name")?.to_string();

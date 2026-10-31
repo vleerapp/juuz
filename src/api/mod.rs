@@ -51,6 +51,16 @@ impl Ctx {
             .expect("endpoint requires authentication")
     }
 
+    pub fn require(&self, allowed: fn(&User) -> bool) -> Result<(), ApiError> {
+        if allowed(self.user()) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden(
+                "user is not authorized for the given operation",
+            ))
+        }
+    }
+
     pub fn require_admin(&self) -> Result<(), ApiError> {
         if self.user().admin {
             Ok(())
@@ -343,18 +353,25 @@ pub fn router(st: AppState) -> Router {
     for path in crate::web::PATHS {
         r = r.route_service(path, web.clone());
     }
-    r.route(
-        "/jukebox/stream/{id}/{file}",
-        axum::routing::get(jukebox::stream),
-    )
-    .route("/share/{id}", axum::routing::get(social::public_share))
-    .route(
-        "/share/{id}/stream/{song}",
-        axum::routing::get(social::public_share_stream),
-    )
-    .fallback(endpoint(false, system::unknown))
-    .layer(axum::middleware::from_fn_with_state(st.clone(), guard))
-    .layer(tower_http::cors::CorsLayer::permissive())
-    .layer(tower_http::trace::TraceLayer::new_for_http())
-    .with_state(st)
+    r.route("/play", axum::routing::get(crate::web::media::play))
+        .route("/art", axum::routing::get(crate::web::media::art))
+        .route(
+            "/scrobble",
+            axum::routing::post(crate::web::media::scrobble),
+        )
+        .route("/playback", axum::routing::post(crate::web::media::event))
+        .route(
+            "/jukebox/stream/{id}/{file}",
+            axum::routing::get(jukebox::stream),
+        )
+        .route("/share/{id}", axum::routing::get(social::public_share))
+        .route(
+            "/share/{id}/stream/{song}",
+            axum::routing::get(social::public_share_stream),
+        )
+        .fallback(endpoint(false, system::unknown))
+        .layer(axum::middleware::from_fn_with_state(st.clone(), guard))
+        .layer(tower_http::cors::CorsLayer::permissive())
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .with_state(st)
 }

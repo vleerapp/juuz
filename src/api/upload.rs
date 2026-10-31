@@ -11,6 +11,7 @@ use tokio::io::AsyncWriteExt;
 use super::model::*;
 use super::{ApiResult, Ctx, empty, ok};
 use crate::auth;
+use crate::db::libraries::{self, Library};
 use crate::db::users::User;
 use crate::error::ApiError;
 use crate::ids;
@@ -39,6 +40,70 @@ fn check_role(st: &AppState, user: &User) -> Result<(), ApiError> {
 
 fn bad_upload(message: impl Into<String>) -> ApiError {
     ApiError::generic(message)
+}
+
+fn writable_library(
+    conn: &rusqlite::Connection,
+    user: &User,
+    id: i64,
+) -> Result<Library, ApiError> {
+    let library = libraries::get(conn, id)?.ok_or_else(|| ApiError::not_found("library"))?;
+    if !user.admin && !libraries::can_access(conn, &user.id, id)? {
+        return Err(ApiError::not_found("library"));
+    }
+    if !library.writable {
+        return Err(ApiError::forbidden("this library is read only"));
+    }
+    if !library.online() {
+        return Err(ApiError::generic("this library is offline"));
+    }
+    Ok(library)
+}
+
+async fn target_library(
+    st: &AppState,
+    user: &User,
+    params: &Params,
+    kind: &str,
+) -> Result<Library, ApiError> {
+    let user = user.clone();
+    let requested = params.int("musicFolderId")?;
+    let key = match kind {
+        "cover" => params.get("albumId").or_else(|| params.get("songId")),
+        "lyrics" => params.get("songId"),
+        _ => None,
+    }
+    .map(str::to_string);
+    let kind = kind.to_string();
+    st.db
+        .run(move |c| {
+            if kind != "song" {
+                let key = key.ok_or_else(|| ApiError::missing("albumId"))?;
+                let id: Option<i64> = c
+                    .query_row(
+                        "SELECT library_id FROM songs WHERE id = ?1
+                         UNION ALL SELECT library_id FROM albums WHERE id = ?1 LIMIT 1",
+                        [&key],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let id = id.ok_or_else(|| ApiError::not_found("item"))?;
+                return writable_library(c, &user, id);
+            }
+            if let Some(id) = requested {
+                return writable_library(c, &user, id);
+            }
+            if let Some(id) = user.upload_library_id
+                && let Ok(library) = writable_library(c, &user, id)
+            {
+                return Ok(library);
+            }
+            libraries::visible_to(c, &user.id)?
+                .into_iter()
+                .find(|l| l.writable && l.online())
+                .ok_or_else(|| ApiError::forbidden("no writable library available"))
+        })
+        .await
 }
 
 async fn receive(
@@ -325,6 +390,7 @@ async fn process_song(
     params: &Params,
     work: &mut PathBuf,
     original: Option<String>,
+    library: &Library,
 ) -> Result<(&'static str, String), ApiError> {
     let probe_path = work.clone();
     let ext = tokio::task::spawn_blocking(move || detect_extension(&probe_path))
@@ -348,12 +414,12 @@ async fn process_song(
     let _guard = st.upload_lock.lock().await;
 
     let relative = target_relative(&meta, ext);
-    let root = &st.cfg.music_dir;
+    let root = &library.path;
     let final_path = unique_path(root.join(&relative));
     if !upload::contained(root, &final_path) {
         return Err(bad_upload("invalid target path"));
     }
-    let predicted = st.scanner.predict_song_id(&final_path, &info);
+    let predicted = st.scanner.predict_song_id(library, &final_path, &info);
     let existing: Option<String> = {
         let id = predicted.clone();
         st.db
@@ -610,7 +676,8 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
 
         let kind = params.get("kind").unwrap_or("song").to_string();
         let original = field.file_name().map(str::to_string);
-        let tmp_dir = st.cfg.music_dir.join(TMP_DIR);
+        let library = target_library(&st, &user, &params, &kind).await?;
+        let tmp_dir = library.path.join(TMP_DIR);
         let limit = match kind.as_str() {
             "song" => max,
             "cover" => st.cfg.upload.max_companion_size,
@@ -623,7 +690,7 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
         let result = match kind.as_str() {
             "cover" => process_cover(&st, &params, &mut work).await,
             "lyrics" => process_lyrics(&st, &params, &mut work).await,
-            _ => match process_song(&st, &user, &params, &mut work, original).await {
+            _ => match process_song(&st, &user, &params, &mut work, original, &library).await {
                 Ok((status, id)) => match song_json(&st, &user.id, &id).await {
                     Ok(song) => Ok(json!({"status": status, "song": song})),
                     Err(e) => Err(e),
@@ -668,7 +735,14 @@ fn prune_dirs(root: &Path, start: &Path) {
 
 pub async fn delete_song(ctx: Ctx) -> ApiResult {
     let user = ctx.user().clone();
-    check_role(&ctx.st, &user)?;
+    if !ctx.st.cfg.upload.enabled {
+        return Err(ApiError::forbidden("uploads are disabled on this server"));
+    }
+    if !user.can_delete() {
+        return Err(ApiError::forbidden(
+            "user is not authorized to delete songs",
+        ));
+    }
     let ids: Vec<String> = ctx
         .params
         .all("id")
@@ -678,26 +752,33 @@ pub async fn delete_song(ctx: Ctx) -> ApiResult {
     if ids.is_empty() {
         return Err(ApiError::missing("id"));
     }
+    let actor = user.clone();
     let found = ctx
         .st
         .db
         .run(move |c| {
             let mut out = Vec::new();
             for id in &ids {
-                let row: Option<String> = c
-                    .query_row("SELECT path FROM songs WHERE id = ?1", params![id], |r| {
-                        r.get(0)
-                    })
+                let row: Option<(String, i64)> = c
+                    .query_row(
+                        "SELECT path, library_id FROM songs WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
                     .optional()?;
-                out.push(row.ok_or_else(|| ApiError::not_found("song"))?);
+                let (path, library_id) = row.ok_or_else(|| ApiError::not_found("song"))?;
+                let library = writable_library(c, &actor, library_id)?;
+                if !upload::contained(&library.path, Path::new(&path)) {
+                    return Err(ApiError::forbidden("song is outside its library"));
+                }
+                out.push((path, library.path));
             }
             Ok(out)
         })
         .await?;
 
     let _guard = ctx.st.upload_lock.lock().await;
-    let root = ctx.st.cfg.music_dir.clone();
-    for path in found {
+    for (path, root) in found {
         let path = PathBuf::from(path);
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}

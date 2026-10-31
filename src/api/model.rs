@@ -4,6 +4,7 @@ use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, Row, params_from_iter};
 use serde_json::{Map, Value, json};
 
+use crate::db::libraries::{artist_visible, visible};
 use crate::error::ApiError;
 use crate::util::{date_obj, iso, placeholders};
 
@@ -38,6 +39,18 @@ pub fn kind_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<ItemKind>
         "p" => Some(ItemKind::Playlist),
         _ => None,
     }))
+}
+
+pub fn kind_of_for(conn: &Connection, uid: &str, id: &str) -> rusqlite::Result<Option<ItemKind>> {
+    use crate::db::libraries;
+    let kind = kind_of(conn, id)?;
+    let allowed = match kind {
+        Some(ItemKind::Song) => libraries::can_access_song(conn, uid, id)?,
+        Some(ItemKind::Album) => libraries::can_access_album(conn, uid, id)?,
+        Some(ItemKind::Artist) => libraries::can_access_artist(conn, uid, id)?,
+        _ => true,
+    };
+    Ok(if allowed { kind } else { None })
 }
 
 pub fn sv(s: &str) -> Sql {
@@ -86,15 +99,15 @@ pub struct SongRow {
     pub last_played: Option<i64>,
 }
 
-pub const SONG_SELECT: &str = "SELECT s.id, s.title, s.album_id, al.title, s.track, s.disc, s.year,
+pub const SONG_SELECT: &str = concat!("SELECT s.id, s.title, s.album_id, al.title, s.track, s.disc, s.year,
     s.duration_ms, s.bitrate, s.sample_rate, s.channels, s.bit_depth, s.size, s.suffix, s.content_type, music_rel(s.path),
     s.cover_hash, al.cover_hash, s.display_artist, s.mbid, s.isrc, s.bpm, s.comment, s.composer,
     s.rg_track_gain, s.rg_track_peak, s.rg_album_gain, s.rg_album_peak, s.created_at, s.omm_id,
     st.starred_at, rt.rating, ps.play_count, ps.last_played
-    FROM songs s JOIN albums al ON al.id = s.album_id
+    FROM songs s JOIN albums al ON al.id = s.album_id AND ", visible!("s.library_id"), "
     LEFT JOIN starred st ON st.item_id = s.id AND st.user_id = ?1
     LEFT JOIN ratings rt ON rt.item_id = s.id AND rt.user_id = ?1
-    LEFT JOIN play_stats ps ON ps.song_id = s.id AND ps.user_id = ?1";
+    LEFT JOIN play_stats ps ON ps.song_id = s.id AND ps.user_id = ?1");
 
 fn map_song(r: &Row) -> rusqlite::Result<SongRow> {
     Ok(SongRow {
@@ -392,7 +405,7 @@ pub struct AlbumRow {
     pub rating: Option<i64>,
 }
 
-pub const ALBUM_SELECT: &str =
+pub const ALBUM_SELECT: &str = concat!(
     "SELECT al.id, al.title, al.year, al.date, al.original_date, al.is_compilation,
     al.cover_hash, al.mbid, al.label, al.created_at, al.omm_id,
     (SELECT COUNT(*) FROM songs s WHERE s.album_id = al.id),
@@ -402,9 +415,12 @@ pub const ALBUM_SELECT: &str =
     (SELECT MAX(p.last_played) FROM play_stats p JOIN songs s ON s.id = p.song_id
         WHERE s.album_id = al.id AND p.user_id = ?1),
     st.starred_at, rt.rating
-    FROM albums al
+    FROM albums al JOIN (SELECT 1) vis ON ",
+    visible!("al.library_id"),
+    "
     LEFT JOIN starred st ON st.item_id = al.id AND st.user_id = ?1
-    LEFT JOIN ratings rt ON rt.item_id = al.id AND rt.user_id = ?1";
+    LEFT JOIN ratings rt ON rt.item_id = al.id AND rt.user_id = ?1"
+);
 
 fn map_album(r: &Row) -> rusqlite::Result<AlbumRow> {
     Ok(AlbumRow {
@@ -571,12 +587,19 @@ pub struct ArtistRow {
     pub has_image: bool,
 }
 
-pub const ARTIST_SELECT: &str = "SELECT ar.id, ar.name, ar.sort_name, ar.mbid, ar.omm_id,
-    (SELECT COUNT(*) FROM album_artists aa WHERE aa.artist_id = ar.id), st.starred_at, rt.rating,
+pub const ARTIST_SELECT: &str = concat!(
+    "SELECT ar.id, ar.name, ar.sort_name, ar.mbid, ar.omm_id,
+    (SELECT COUNT(*) FROM album_artists aa JOIN albums aal ON aal.id = aa.album_id
+        WHERE aa.artist_id = ar.id AND ",
+    visible!("aal.library_id"),
+    "), st.starred_at, rt.rating,
     ar.image_path IS NOT NULL
-    FROM artists ar
+    FROM artists ar JOIN (SELECT 1) vis ON ",
+    artist_visible!("ar.id"),
+    "
     LEFT JOIN starred st ON st.item_id = ar.id AND st.user_id = ?1
-    LEFT JOIN ratings rt ON rt.item_id = ar.id AND rt.user_id = ?1";
+    LEFT JOIN ratings rt ON rt.item_id = ar.id AND rt.user_id = ?1"
+);
 
 fn map_artist(r: &Row) -> rusqlite::Result<ArtistRow> {
     Ok(ArtistRow {

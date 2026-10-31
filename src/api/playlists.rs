@@ -104,9 +104,9 @@ fn write_songs(conn: &Connection, id: &str, songs: &[String]) -> rusqlite::Resul
     Ok(())
 }
 
-fn existing_songs(conn: &Connection, ids: &[String]) -> Result<Vec<String>, ApiError> {
+fn existing_songs(conn: &Connection, uid: &str, ids: &[String]) -> Result<Vec<String>, ApiError> {
     for id in ids {
-        if kind_of(conn, id)? != Some(ItemKind::Song) {
+        if kind_of_for(conn, uid, id)? != Some(ItemKind::Song) {
             return Err(ApiError::not_found("song"));
         }
     }
@@ -171,7 +171,7 @@ pub async fn create_playlist(ctx: Ctx) -> ApiResult {
         .st
         .db
         .run(move |c| {
-            let songs = existing_songs(c, &songs)?;
+            let songs = existing_songs(c, &me.id, &songs)?;
             let id = match existing {
                 Some(id) => {
                     owned(c, &id, &me)?;
@@ -245,7 +245,7 @@ pub async fn update_playlist(ctx: Ctx) -> ApiResult {
                 for i in drop.into_iter().rev() {
                     songs.remove(i);
                 }
-                songs.extend(existing_songs(c, &add)?);
+                songs.extend(existing_songs(c, &me.id, &add)?);
                 write_songs(c, &id, &songs)?;
             }
             c.execute(
