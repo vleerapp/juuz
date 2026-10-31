@@ -39,15 +39,17 @@ services:
     ports:
       - "4533:4533"
     environment:
-      JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password
-      JUUZ_OMM: "true"
-      JUUZ_LASTFM_API_KEY: ""
+      JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password # first start only, random and logged if unset
+      JUUZ_PUBLIC_URL: "https://juuz.example.com" # base url for share links, default from request
+      JUUZ_TRUST_PROXY: true # behind a reverse proxy, use X-Forwarded-For as client ip (default false)
+      JUUZ_RATE_LIMIT: 1800 # requests per minute per ip, 0 turns it off
+      JUUZ_OMM: "true" # false stops sending track names to OpenMusicMetadata
+      JUUZ_LASTFM_API_KEY: "" # scrobbling is off without it
       JUUZ_LASTFM_SECRET: ""
-      JUUZ_PUBLIC_URL: "https://juuz.example.com"
-      JUUZ_TRUST_PROXY: true
     volumes:
       - data:/data
-      - /path/to/your/music:/music
+      - /path/to/your/music:/music # first library
+      - /mnt/family-nas/music:/libraries/family # more libraries go outside /music, add the path on the server page
 
 volumes:
   data:
@@ -55,35 +57,9 @@ volumes:
 
 The server runs on port 4533. The music folder must be writable by uid 1000, since uploads are saved there.
 
-## Web UI
+For Last.fm, create an API account at [last.fm/api](https://www.last.fm/api/account/create), set both variables and restart. Each user then links their account on the `account` page.
 
-Open `http://<host>:4533` and sign in with any juuz user. There is no player. Pages:
-
-- `stats`: play stats (top songs, albums and artists, recent plays, plays per day), per user or for everyone as admin
-- `account`: username, max bitrate, play recording, password, Last.fm link
-- `keys`: API keys
-- `users` (admin): users and roles
-- `server` (admin): library scan and a read-only view of the server configuration
-
-## Configuration
-
-Environment variables, set in `docker-compose.yml`:
-
-| Variable              | Default             | Description                                                  |
-| --------------------- | ------------------- | ------------------------------------------------------------ |
-| `JUUZ_ADMIN_PASSWORD` | random, logged once | Password of the `admin` user, only used on first start       |
-| `JUUZ_PUBLIC_URL`     | from request        | Public base url used in share links, e.g. `https://music.example.com` |
-| `JUUZ_RATE_LIMIT`     | `1800`              | Requests per minute per client ip (burst 300), `0` turns it off. 10 failed logins from one ip lock that ip out for 5 minutes |
-| `JUUZ_TRUST_PROXY`    | `false`             | Set `true` behind a reverse proxy so limits use the real client ip from `X-Forwarded-For` |
-| `JUUZ_OMM`            | `true`              | Set `false` to stop sending track names to OpenMusicMetadata |
-| `JUUZ_LASTFM_API_KEY` |                     | Last.fm API key, scrobbling is off without it                |
-| `JUUZ_LASTFM_SECRET`  |                     | Last.fm shared secret                                        |
-
-## Last.fm
-
-Create an API account at [last.fm/api](https://www.last.fm/api/account/create), set both variables and restart. Each user links their account once: call `juuzLastfmAuthUrl`, open the returned `url` and allow access, then call `juuzLastfmLink?token=<token>`. After that every `scrobble` from any app is forwarded as now playing and as a scrobble.
-
-## Song upload
+## Song upload Extension
 
 An app sends a file to `juuzUploadSong` with an API key (`juuzCreateApiKey`). The server writes the tags, saves the file and indexes it right away.
 
@@ -99,4 +75,11 @@ music/
         └── 01 - Song.flac
 ```
 
-Tags can be set with `title`, `artist`, `albumArtist`, `album`, `track`, `disc`, `year` and `genre`. Missing ones are filled from `relativePath` (the original path) or `ommId` (an OpenMusicMetadata id). Add `kind=cover&albumId=…` or `kind=lyrics&songId=…` for covers and `.lrc` files, and call `juuzDeleteSong?id=…` to delete a song. Uploading the same song twice returns `"status": "duplicate"`. The user needs the upload role.
+- Tags: `title`, `artist`, `albumArtist`, `album`, `track`, `disc`, `year`, `genre`
+- Missing tags are filled from `relativePath` or `ommId`
+- Cover: `kind=cover&albumId=…`
+- Lyrics: `kind=lyrics&songId=…`
+- Delete: `juuzDeleteSong?id=…`
+- Library: `musicFolderId=<id>`
+- Same song twice returns `"status": "duplicate"`
+- Needs the upload role
