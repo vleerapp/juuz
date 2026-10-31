@@ -1,7 +1,11 @@
 mod actions;
 mod auth;
 mod data;
+mod icons;
+mod libraries;
+mod library;
 mod live;
+pub mod media;
 mod nav;
 mod notice;
 mod page;
@@ -19,7 +23,7 @@ use topcoat::session::{
 use crate::state::AppState;
 use auth::https;
 
-const COOKIE: &str = "juuz_session";
+pub(crate) const COOKIE: &str = "juuz_session";
 const LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
 struct CookieStore;
@@ -67,7 +71,7 @@ impl TokenStore for CookieStore {
     }
 }
 
-pub const PATHS: [&str; 14] = [
+pub const PATHS: [&str; 19] = [
     "/",
     "/login",
     "/logout",
@@ -79,15 +83,24 @@ pub const PATHS: [&str; 14] = [
     "/_topcoat/{*rest}",
     "/events",
     "/account/{*rest}",
-    "/admin/{*rest}",
+    "/users/{*rest}",
+    "/server/{*rest}",
     "/account",
-    "/admin",
+    "/users",
+    "/server",
+    "/player.js",
+    "/library",
+    "/library/{*rest}",
 ];
 
 pub fn service(st: AppState) -> TowerService {
-    let builder = page::routes(actions::routes(live::routes(auth::routes(
-        Router::builder(),
-    ))));
+    let builder = Router::builder();
+    let builder = auth::routes(builder);
+    let builder = live::routes(builder);
+    let builder = actions::routes(builder);
+    let builder = page::routes(builder);
+    let builder = libraries::routes(builder);
+    let builder = library::routes(builder);
     let builder = builder
         .cookies()
         .sessions(

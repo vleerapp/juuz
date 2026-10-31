@@ -1,0 +1,91 @@
+use topcoat::Result;
+use topcoat::icon::{IconData, icon};
+use topcoat::view::svg::ViewBox;
+use topcoat::view::{View, component, view};
+
+const GRID: ViewBox = ViewBox::new(0.0, 0.0, 16.0, 16.0);
+
+macro_rules! speaker {
+    () => {
+        "M7.33333 1.33334H6V14.6667H7.33333V1.33334ZM5.99999 2.66666H4.66666V3.99999H5.99999V2.66666ZM4.66668 4H3.33334V5.33333H4.66668V4ZM3.33332 5.33334H0.666656V6.66668H3.33332V5.33334ZM1.99999 6.66666H0.666656V10.6667H1.99999V6.66666ZM3.33333 9.33334H2V10.6667H3.33333V9.33334ZM4.66668 10.6667H3.33334V12H4.66668V10.6667ZM5.99999 12H4.66666V13.3333H5.99999V12Z"
+    };
+}
+
+macro_rules! wave_1 {
+    () => {
+        "M9.99999 6.66666H8.66666V9.33332H9.99999V6.66666Z"
+    };
+}
+
+macro_rules! wave_2 {
+    () => {
+        "M11.3333 4H8.66666V5.33333H11.3333V4ZM12.6667 5.33334H11.3333V10.6667H12.6667V5.33334ZM11.3333 10.6667H8.66666V12H11.3333V10.6667Z"
+    };
+}
+
+macro_rules! wave_3 {
+    () => {
+        "M12.6667 1.33334H8.66666V2.66668H12.6667V1.33334ZM14 2.66666H12.6667V3.99999H14V2.66666ZM15.3333 4H14V12H15.3333V4ZM14 12H12.6667V13.3333H14V12ZM12.6667 13.3333H8.66666V14.6667H12.6667V13.3333Z"
+    };
+}
+
+macro_rules! cross {
+    () => {
+        "M9.99999 6H8.66666V7.33333H9.99999V6ZM12.6667 6H11.3333V7.33333H12.6667V6ZM11.3333 7.33334H10V8.66668H11.3333V7.33334ZM9.99999 8.66666H8.66666V9.99999H9.99999V8.66666ZM12.6667 8.66666H11.3333V9.99999H12.6667V8.66666Z"
+    };
+}
+
+macro_rules! shape {
+    ($($d:expr),+) => {
+        IconData::unescaped_unchecked(
+            GRID,
+            concat!(r#"<path fill="currentColor" d=""#, $($d),+, r#""/>"#),
+        )
+    };
+}
+
+pub(super) const PLAY_ICON: IconData = shape!(
+    "M6.66668 13.3333H5.33334V2.66667H6.66668V4H8.00001V6H9.33334V7.33333H10.6667V8.66667H9.33334V10H8.00001V12H6.66668V13.3333Z"
+);
+pub(super) const DURATION_ICON: IconData = shape!(
+    "M12.6667 2H3.33333V3.33333H2V12.6667H3.33333V14H12.6667V12.6667H14V3.33333H12.6667V2ZM12.6667 3.33333V12.6667H3.33333V3.33333H12.6667ZM7.33333 4.66667H8.66667V8.66667H11.3333V10H7.33333V4.66667Z"
+);
+pub(super) const ARROW_UP_ICON: IconData = shape!(
+    "M8.66668 2.66669H7.33334V13.3334H8.66668V2.66669ZM7.33333 4H6V5.33333H7.33333V4ZM9.99999 4H8.66666V5.33333H9.99999V4ZM5.99999 5.33331H4.66666V6.66665H5.99999V5.33331ZM11.3333 5.33331H10V6.66665H11.3333V5.33331ZM4.66668 6.66669H3.33334V8.00002H4.66668V6.66669ZM12.6667 6.66669H11.3333V8.00002H12.6667V6.66669Z"
+);
+pub(super) const ARROW_DOWN_ICON: IconData = shape!(
+    "M8.66668 2.66669H7.33334V13.3334H8.66668V2.66669ZM4.66668 8H3.33334V9.33333H4.66668V8ZM12.6667 8H11.3333V9.33333H12.6667V8ZM5.99999 9.33331H4.66666V10.6666H5.99999V9.33331ZM11.3333 9.33331H10V10.6666H11.3333V9.33331ZM7.33333 10.6667H6V12H7.33333V10.6667ZM9.99999 10.6667H8.66666V12H9.99999V10.6667Z"
+);
+pub(super) const CHEVRON_DOWN_ICON: IconData = ARROW_DOWN_ICON;
+
+const PAUSE: IconData = shape!(
+    "M6.66668 2.66667H3.33334V13.3333H6.66668V2.66667ZM12.6667 2.66667H9.33334V13.3333H12.6667V2.66667Z"
+);
+const PREVIOUS: IconData = shape!(
+    "M4 2.66666H5.33333V13.3333H4V2.66666ZM12 2.66666H10.6667V4H9.33333V6H8V7.33333H6.66667V8.66666H8V10.6667H9.33333V12H10.6667V13.3333H12V2.66666Z"
+);
+const FORWARD: IconData = shape!(
+    "M4 2.66667H5.33333V4H6.66667V5.33333H8V6.66667H9.33333V9.33333H8V10.6667H6.66667V12H5.33333V13.3333H4V2.66667ZM12 2.66667H10.6667V13.3333H12V2.66667Z"
+);
+const MUTE: IconData = shape!(speaker!(), cross!());
+const VOLUME_1: IconData = shape!(speaker!());
+const VOLUME_2: IconData = shape!(speaker!(), wave_1!());
+const VOLUME_3: IconData = shape!(speaker!(), wave_1!(), wave_2!());
+const VOLUME_4: IconData = shape!(speaker!(), wave_1!(), wave_2!(), wave_3!());
+
+#[component]
+pub(super) async fn sheet() -> Result<impl View> {
+    Ok(view! {
+        <template id="juuz-icons">
+            <span data-icon="play">icon(data: PLAY_ICON)</span>
+            <span data-icon="pause">icon(data: PAUSE)</span>
+            <span data-icon="previous">icon(data: PREVIOUS)</span>
+            <span data-icon="next">icon(data: FORWARD)</span>
+            <span data-icon="mute">icon(data: MUTE)</span>
+            <span data-icon="volume1">icon(data: VOLUME_1)</span>
+            <span data-icon="volume2">icon(data: VOLUME_2)</span>
+            <span data-icon="volume3">icon(data: VOLUME_3)</span>
+            <span data-icon="volume4">icon(data: VOLUME_4)</span>
+        </template>
+    })
+}

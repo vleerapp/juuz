@@ -58,8 +58,12 @@ pub async fn require(cx: &Cx) -> Result<User> {
 }
 
 pub async fn require_admin(cx: &Cx) -> Result<User> {
+    require_role(cx, |u| u.admin).await
+}
+
+pub async fn require_role(cx: &Cx, allowed: fn(&User) -> bool) -> Result<User> {
     let user = require(cx).await?;
-    if user.admin {
+    if allowed(&user) {
         Ok(user)
     } else {
         Err(back(Page::Stats, Notice::Forbidden).into())

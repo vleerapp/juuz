@@ -24,10 +24,20 @@ pub enum Notice {
     ScanBusy,
     JukeboxScanned,
     JukeboxFailed,
+    LibraryAdded,
+    LibraryUpdated,
+    LibraryRemoved,
+    LibraryPath,
+    LibraryOverlap,
+    LibraryExists,
+    AccessSaved,
+    CatalogueMatched,
+    CatalogueCleared,
+    CatalogueOff,
 }
 
 impl Notice {
-    const EACH: [Notice; 20] = [
+    const EACH: [Notice; 30] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -48,6 +58,16 @@ impl Notice {
         Notice::ScanBusy,
         Notice::JukeboxScanned,
         Notice::JukeboxFailed,
+        Notice::LibraryAdded,
+        Notice::LibraryUpdated,
+        Notice::LibraryRemoved,
+        Notice::LibraryPath,
+        Notice::LibraryOverlap,
+        Notice::LibraryExists,
+        Notice::AccessSaved,
+        Notice::CatalogueMatched,
+        Notice::CatalogueCleared,
+        Notice::CatalogueOff,
     ];
 
     pub fn code(self) -> &'static str {
@@ -72,6 +92,16 @@ impl Notice {
             Notice::ScanBusy => "scan-busy",
             Notice::JukeboxScanned => "jukebox-scanned",
             Notice::JukeboxFailed => "jukebox-failed",
+            Notice::LibraryAdded => "library-added",
+            Notice::LibraryUpdated => "library-updated",
+            Notice::LibraryRemoved => "library-removed",
+            Notice::LibraryPath => "library-path",
+            Notice::LibraryOverlap => "library-overlap",
+            Notice::LibraryExists => "library-exists",
+            Notice::AccessSaved => "access-saved",
+            Notice::CatalogueMatched => "catalogue-matched",
+            Notice::CatalogueCleared => "catalogue-cleared",
+            Notice::CatalogueOff => "catalogue-off",
         }
     }
 
@@ -82,7 +112,7 @@ impl Notice {
     pub fn text(self) -> &'static str {
         match self {
             Notice::LoginFailed => "wrong username or password",
-            Notice::Forbidden => "admin access required",
+            Notice::Forbidden => "you do not have access to that",
             Notice::Invalid => "invalid input",
             Notice::Saved => "settings saved",
             Notice::PasswordChanged => "password changed, other sessions signed out",
@@ -101,6 +131,16 @@ impl Notice {
             Notice::ScanBusy => "a scan is already running",
             Notice::JukeboxScanned => "renderer scan finished",
             Notice::JukeboxFailed => "could not use that renderer",
+            Notice::LibraryAdded => "library added, scanning it now",
+            Notice::LibraryUpdated => "library updated",
+            Notice::LibraryRemoved => "library removed",
+            Notice::LibraryPath => "that path is not a readable directory",
+            Notice::LibraryOverlap => "that path overlaps another library",
+            Notice::LibraryExists => "a library with that name already exists",
+            Notice::AccessSaved => "library access saved",
+            Notice::CatalogueMatched => "metadata match saved",
+            Notice::CatalogueCleared => "metadata match cleared",
+            Notice::CatalogueOff => "metadata lookup is disabled on this server",
         }
     }
 
@@ -117,6 +157,10 @@ impl Notice {
                 | Notice::SelfProtected
                 | Notice::ScanBusy
                 | Notice::JukeboxFailed
+                | Notice::LibraryPath
+                | Notice::LibraryOverlap
+                | Notice::LibraryExists
+                | Notice::CatalogueOff
         )
     }
 }

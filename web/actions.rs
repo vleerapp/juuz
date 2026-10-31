@@ -7,11 +7,11 @@ use topcoat::router::content::Form;
 use topcoat::router::error::{SeeOther, see_other};
 use topcoat::router::{query_params, request, route};
 
-use super::auth::{fail, https, require, require_admin, state, token};
+use super::auth::{fail, https, require, require_admin, require_role, state, token};
 use super::nav::Page;
 use super::notice::{Notice, back};
 use crate::auth::{self, verify_password_async};
-use crate::db::users::{self, RoleUpdate};
+use crate::db::users::{self, RoleUpdate, User};
 
 const MAX_BIT_RATE: i64 = 100_000;
 const MAX_FIELD: usize = 254;
@@ -110,13 +110,13 @@ struct KeyDeleteForm {
 
 #[route(POST "/account/apikeys/delete")]
 async fn delete_key(cx: &Cx, Form(form): Form<KeyDeleteForm>) -> Result<SeeOther> {
-    let user = require(cx).await?;
+    let user = require_role(cx, User::can_keys).await?;
     state(cx)
         .db
         .run(move |c| Ok(users::delete_api_key(c, &user.id, &form.id)?))
         .await
         .map_err(fail)?;
-    Ok(back(Page::Keys, Notice::KeyDeleted))
+    Ok(back(Page::Account, Notice::KeyDeleted))
 }
 
 const LASTFM_COOKIE: &str = "juuz_lastfm";
@@ -216,7 +216,7 @@ struct CreateForm {
     admin: Option<String>,
 }
 
-#[route(POST "/admin/users/create")]
+#[route(POST "/users/create")]
 async fn create_user(cx: &Cx, Form(form): Form<CreateForm>) -> Result<SeeOther> {
     require_admin(cx).await?;
     let st = state(cx);
@@ -265,9 +265,16 @@ struct UpdateForm {
     podcast: Option<String>,
     share: Option<String>,
     jukebox: Option<String>,
+    keys: Option<String>,
+    scan: Option<String>,
+    server: Option<String>,
+    radio: Option<String>,
+    delete: Option<String>,
+    library: Option<String>,
+    catalogue: Option<String>,
 }
 
-#[route(POST "/admin/users/update")]
+#[route(POST "/users/update")]
 async fn update_user(cx: &Cx, Form(form): Form<UpdateForm>) -> Result<SeeOther> {
     let me = require_admin(cx).await?;
     let st = state(cx);
@@ -283,6 +290,13 @@ async fn update_user(cx: &Cx, Form(form): Form<UpdateForm>) -> Result<SeeOther> 
         podcast: Some(form.podcast.is_some()),
         share: Some(form.share.is_some()),
         jukebox: Some(form.jukebox.is_some()),
+        keys: Some(form.keys.is_some()),
+        scan: Some(form.scan.is_some()),
+        server: Some(form.server.is_some()),
+        radio: Some(form.radio.is_some()),
+        delete: Some(form.delete.is_some()),
+        library: Some(form.library.is_some()),
+        catalogue: Some(form.catalogue.is_some()),
         ..RoleUpdate::default()
     };
     let credentials = if form.password.is_empty() {
@@ -327,7 +341,45 @@ struct DeleteForm {
     username: String,
 }
 
-#[route(POST "/admin/users/delete")]
+#[route(POST "/users/libraries")]
+async fn user_libraries(
+    cx: &Cx,
+    Form(form): Form<std::collections::HashMap<String, String>>,
+) -> Result<SeeOther> {
+    require_admin(cx).await?;
+    let Some(name) = form.get("username").cloned() else {
+        return Ok(back(Page::Users, Notice::Invalid));
+    };
+    let granted: Vec<i64> = form
+        .keys()
+        .filter_map(|k| k.strip_prefix("lib_")?.parse().ok())
+        .collect();
+    let upload: Option<i64> = form.get("upload").and_then(|v| v.parse().ok());
+    let outcome = state(cx)
+        .db
+        .run(move |c| {
+            let Some(user) = users::by_name(c, &name)? else {
+                return Ok(Notice::Invalid);
+            };
+            if !user.admin {
+                crate::db::libraries::set_access(c, &user.id, &granted)?;
+            }
+            let upload = upload.filter(|id| {
+                (user.admin || granted.contains(id))
+                    && crate::db::libraries::get(c, *id).ok().flatten().is_some()
+            });
+            c.execute(
+                "UPDATE users SET upload_library_id = ?2 WHERE id = ?1",
+                rusqlite::params![user.id, upload],
+            )?;
+            Ok(Notice::AccessSaved)
+        })
+        .await
+        .map_err(fail)?;
+    Ok(back(Page::Users, outcome))
+}
+
+#[route(POST "/users/delete")]
 async fn delete_user(cx: &Cx, Form(form): Form<DeleteForm>) -> Result<SeeOther> {
     let me = require_admin(cx).await?;
     let outcome = state(cx)
@@ -352,9 +404,9 @@ struct ScanForm {
     full: Option<String>,
 }
 
-#[route(POST "/admin/scan")]
+#[route(POST "/server/scan")]
 async fn scan(cx: &Cx, Form(form): Form<ScanForm>) -> Result<SeeOther> {
-    require_admin(cx).await?;
+    require_role(cx, User::can_scan).await?;
     let started = state(cx).scanner.start(form.full.is_some());
     Ok(back(
         Page::Server,
@@ -372,9 +424,9 @@ struct OutputForm {
     url: Option<String>,
 }
 
-#[route(POST "/admin/jukebox/select")]
+#[route(POST "/server/jukebox/select")]
 async fn jukebox_select(cx: &Cx, Form(form): Form<OutputForm>) -> Result<SeeOther> {
-    require_admin(cx).await?;
+    require_role(cx, User::can_server).await?;
     let id = form.id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let url = form.url.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let notice = match state(cx).jukebox.select(id, url).await {
@@ -387,9 +439,9 @@ async fn jukebox_select(cx: &Cx, Form(form): Form<OutputForm>) -> Result<SeeOthe
     Ok(back(Page::Server, notice))
 }
 
-#[route(POST "/admin/jukebox/scan")]
+#[route(POST "/server/jukebox/scan")]
 async fn jukebox_scan(cx: &Cx) -> Result<SeeOther> {
-    require_admin(cx).await?;
+    require_role(cx, User::can_server).await?;
     let notice = match state(cx).jukebox.scan().await {
         Ok(_) => Notice::JukeboxScanned,
         Err(_) => Notice::JukeboxFailed,
@@ -406,6 +458,7 @@ pub fn routes(b: RouterBuilder) -> RouterBuilder {
         .route(lastfm_unlink)
         .route(create_user)
         .route(update_user)
+        .route(user_libraries)
         .route(delete_user)
         .route(scan)
         .route(jukebox_select)

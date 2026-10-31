@@ -15,8 +15,8 @@
     const root = document.documentElement;
     const TEXT = "input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea";
     const FOCUSABLE =
-      "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), summary, [data-copy]";
-    const MAX_COLS = 160;
+      "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), summary, [data-copy], .slider";
+    const MAX_COLS = 2000;
     const gauge = (css) => {
       let el = null;
       return () => {
@@ -152,8 +152,11 @@
         const to = cand.getBoundingClientRect();
         const dy = to.top - from.top;
         const dx = to.left - from.left;
-        if (dir === "down" && dy > half && columnOf(cand) === col) consider(cand, dy * 1e4 + Math.abs(to.left - x));
-        else if (dir === "up" && dy < -half && columnOf(cand) === col) consider(cand, -dy * 1e4 + Math.abs(to.left - x));
+        const aligned =
+          (to.left < x + from.width && to.right > x) || Math.abs(to.left - x) <= 2 * cw;
+        const off = aligned ? 0 : 1e9;
+        if (dir === "down" && dy > half && columnOf(cand) === col) consider(cand, off + dy * 1e4 + Math.abs(to.left - x));
+        else if (dir === "up" && dy < -half && columnOf(cand) === col) consider(cand, off - dy * 1e4 + Math.abs(to.left - x));
         else if (dir === "right" && Math.abs(dy) < half && dx > 1) consider(cand, dx);
         else if (dir === "left" && Math.abs(dy) < half && dx < -1) consider(cand, -dx);
       }
@@ -221,7 +224,7 @@
         copy(el);
         return;
       }
-      if (e.key === "Enter" && el && el.type === "checkbox") {
+      if (e.key === "Enter" && el && (el.type === "checkbox" || el.type === "radio")) {
         e.preventDefault();
         el.click();
         return;
@@ -240,6 +243,14 @@
       if (e.key === "[" || e.key === "]") {
         e.preventDefault();
         jump(e.key === "]" ? 1 : -1);
+        return;
+      }
+      if (e.key === "b") {
+        const toggle = document.querySelector('.player:not([hidden]) [data-act="toggle"]');
+        if (toggle) {
+          e.preventDefault();
+          focusTo(toggle);
+        }
         return;
       }
       if (/^[0-9]$/.test(e.key)) {
