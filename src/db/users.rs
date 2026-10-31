@@ -25,6 +25,14 @@ pub struct User {
     pub jukebox: bool,
     pub scrobbling: bool,
     pub max_bit_rate: i64,
+    pub scan: bool,
+    pub server: bool,
+    pub radio: bool,
+    pub delete: bool,
+    pub library: bool,
+    pub catalogue: bool,
+    pub upload_library_id: Option<i64>,
+    pub keys: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -40,6 +48,13 @@ pub struct RoleUpdate {
     pub podcast: Option<bool>,
     pub share: Option<bool>,
     pub jukebox: Option<bool>,
+    pub scan: Option<bool>,
+    pub server: Option<bool>,
+    pub radio: Option<bool>,
+    pub delete: Option<bool>,
+    pub library: Option<bool>,
+    pub catalogue: Option<bool>,
+    pub keys: Option<bool>,
     pub scrobbling: Option<bool>,
     pub max_bit_rate: Option<i64>,
     pub email: Option<String>,
@@ -47,7 +62,8 @@ pub struct RoleUpdate {
 
 const COLS: &str = "id, name, password_hash, token_secret, email, admin_role, settings_role, \
     stream_role, download_role, upload_role, playlist_role, cover_art_role, comment_role, \
-    podcast_role, share_role, jukebox_role, scrobbling_enabled, max_bit_rate";
+    podcast_role, share_role, jukebox_role, scrobbling_enabled, max_bit_rate, \
+    scan_role, server_role, radio_role, delete_role, library_role, catalogue_role, upload_library_id, keys_role";
 
 fn map(r: &Row) -> rusqlite::Result<User> {
     Ok(User {
@@ -69,12 +85,48 @@ fn map(r: &Row) -> rusqlite::Result<User> {
         jukebox: r.get(15)?,
         scrobbling: r.get(16)?,
         max_bit_rate: r.get(17)?,
+        scan: r.get(18)?,
+        server: r.get(19)?,
+        radio: r.get(20)?,
+        delete: r.get(21)?,
+        library: r.get(22)?,
+        catalogue: r.get(23)?,
+        upload_library_id: r.get(24)?,
+        keys: r.get(25)?,
     })
 }
 
 impl User {
     pub fn can_upload(&self) -> bool {
         self.admin || self.upload
+    }
+
+    pub fn can_scan(&self) -> bool {
+        self.admin || self.scan
+    }
+
+    pub fn can_server(&self) -> bool {
+        self.admin || self.server
+    }
+
+    pub fn can_radio(&self) -> bool {
+        self.admin || self.radio
+    }
+
+    pub fn can_delete(&self) -> bool {
+        self.admin || self.delete
+    }
+
+    pub fn can_library(&self) -> bool {
+        self.admin || self.library
+    }
+
+    pub fn can_catalogue(&self) -> bool {
+        self.admin || self.catalogue
+    }
+
+    pub fn can_keys(&self) -> bool {
+        self.admin || self.keys
     }
 
     pub fn to_json(&self, folders: &[i64]) -> Value {
@@ -94,6 +146,13 @@ impl User {
             "streamRole": self.stream || self.admin,
             "jukeboxRole": self.jukebox || self.admin,
             "shareRole": self.share || self.admin,
+            "juuzScanRole": self.can_scan(),
+            "juuzServerRole": self.can_server(),
+            "juuzRadioRole": self.can_radio(),
+            "juuzDeleteRole": self.can_delete(),
+            "juuzLibraryRole": self.can_library(),
+            "juuzCatalogueRole": self.can_catalogue(),
+            "juuzKeysRole": self.can_keys(),
             "videoConversionRole": false,
             "folder": folders,
         })
@@ -166,6 +225,10 @@ pub fn create(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![id, name, password_hash, token_secret, admin, now()],
     )?;
+    conn.execute(
+        "INSERT INTO user_libraries(user_id, library_id) SELECT ?1, id FROM libraries",
+        [&id],
+    )?;
     Ok(id)
 }
 
@@ -214,7 +277,7 @@ pub fn set_token_secret(conn: &Connection, id: &str, secret: &[u8]) -> rusqlite:
 }
 
 pub fn update_roles(conn: &Connection, id: &str, u: &RoleUpdate) -> rusqlite::Result<()> {
-    let flags: [(&str, Option<bool>); 12] = [
+    let flags: [(&str, Option<bool>); 19] = [
         ("admin_role", u.admin),
         ("settings_role", u.settings),
         ("stream_role", u.stream),
@@ -226,6 +289,13 @@ pub fn update_roles(conn: &Connection, id: &str, u: &RoleUpdate) -> rusqlite::Re
         ("podcast_role", u.podcast),
         ("share_role", u.share),
         ("jukebox_role", u.jukebox),
+        ("scan_role", u.scan),
+        ("server_role", u.server),
+        ("radio_role", u.radio),
+        ("delete_role", u.delete),
+        ("library_role", u.library),
+        ("catalogue_role", u.catalogue),
+        ("keys_role", u.keys),
         ("scrobbling_enabled", u.scrobbling),
     ];
     for (col, v) in flags {

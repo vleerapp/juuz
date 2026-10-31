@@ -1,3 +1,5 @@
+pub mod events;
+pub mod libraries;
 pub mod settings;
 pub mod users;
 
@@ -6,7 +8,7 @@ use rusqlite::Connection;
 use rusqlite::functions::FunctionFlags;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use crate::error::ApiError;
@@ -21,7 +23,7 @@ struct MigrationFiles;
 
 struct Shared {
     path: PathBuf,
-    music_dir: PathBuf,
+    roots: Arc<RwLock<Vec<PathBuf>>>,
     state: Mutex<PoolState>,
     available: Condvar,
 }
@@ -68,26 +70,28 @@ impl Drop for Conn {
     }
 }
 
-fn open_connection(path: &Path, music_dir: &Path) -> Result<Connection> {
+fn open_connection(path: &Path, roots: &Arc<RwLock<Vec<PathBuf>>>) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    let root = music_dir.to_path_buf();
+    let roots = roots.clone();
     conn.create_scalar_function(
         "music_rel",
         1,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx| {
             let path = ctx.get::<String>(0)?;
-            Ok(Path::new(&path)
-                .strip_prefix(&root)
+            let roots = roots.read().unwrap_or_else(|e| e.into_inner());
+            Ok(roots
+                .iter()
+                .find_map(|root| Path::new(&path).strip_prefix(root).ok())
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or(path))
         },
     )?;
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
+        "PRAGMA busy_timeout = 15000;
+         PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA busy_timeout = 15000;",
+         PRAGMA synchronous = NORMAL;",
     )?;
     Ok(conn)
 }
@@ -124,12 +128,15 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
 
 impl Db {
     pub fn open(path: &Path, music_dir: PathBuf) -> Result<Db> {
-        let mut first = open_connection(path, &music_dir).context("opening database")?;
+        let roots = Arc::new(RwLock::new(Vec::new()));
+        let mut first = open_connection(path, &roots).context("opening database")?;
         run_migrations(&mut first).context("running migrations")?;
+        libraries::adopt_default(&first, &music_dir).context("registering the music dir")?;
+        *roots.write().unwrap_or_else(|e| e.into_inner()) = libraries::roots(&first)?;
         Ok(Db {
             shared: Arc::new(Shared {
                 path: path.to_path_buf(),
-                music_dir,
+                roots,
                 state: Mutex::new(PoolState {
                     idle: vec![first],
                     open: 1,
@@ -152,7 +159,7 @@ impl Db {
             if state.open < MAX_CONNECTIONS {
                 state.open += 1;
                 drop(state);
-                return match open_connection(&shared.path, &shared.music_dir) {
+                return match open_connection(&shared.path, &shared.roots) {
                     Ok(conn) => Ok(Conn {
                         conn: Some(conn),
                         shared: shared.clone(),
@@ -173,6 +180,21 @@ impl Db {
                 bail!("timed out waiting for a database connection");
             }
         }
+    }
+
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.shared
+            .roots
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn refresh_roots(&self) -> Result<(), ApiError> {
+        let conn = self.conn()?;
+        let roots = libraries::roots(&conn)?;
+        *self.shared.roots.write().unwrap_or_else(|e| e.into_inner()) = roots;
+        Ok(())
     }
 
     pub fn conn(&self) -> Result<Conn, ApiError> {
@@ -212,4 +234,45 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    #[test]
+    fn numeric_omm_ids_migration_clears_only_legacy_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/001_init.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists (id, name, omm_id, omm_art_url, omm_checked_at, created_at) VALUES
+                ('a1', 'old', 'omm:artist:0a1b2c3d4e5f6g7h', 'http://x', 5, 0),
+                ('a2', 'new', 'omm:artist:3456789012', 'http://y', 5, 0),
+                ('a3', 'wrongkind', 'omm:song:3456789012', NULL, 5, 0),
+                ('a4', 'none', NULL, NULL, NULL, 0),
+                ('a5', 'zero', 'omm:artist:0123456789', NULL, 5, 0),
+                ('a6', 'long', 'omm:artist:1234567890123456789', NULL, 5, 0),
+                ('a7', 'max', 'omm:artist:123456789012345678', NULL, 5, 0);",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!("../../migrations/002_omm_numeric_ids.sql"))
+            .unwrap();
+        let kept: Vec<String> = conn
+            .prepare("SELECT id FROM artists WHERE omm_id IS NOT NULL ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kept, ["a2", "a7"]);
+        let cleared: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT omm_art_url, omm_checked_at FROM artists WHERE id = 'a1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cleared, (None, None));
+    }
 }
