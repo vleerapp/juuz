@@ -448,7 +448,11 @@ fn wedge(hour: usize, plays: i64, peak: i64) -> String {
     const STUB: f64 = 0.05;
     const GAP: f64 = 0.018;
     const STEPS: usize = 8;
-    let frac = if peak > 0 { plays as f64 / peak as f64 } else { 0.0 };
+    let frac = if peak > 0 {
+        plays as f64 / peak as f64
+    } else {
+        0.0
+    };
     let outer = HOLE + STUB + (1.0 - HOLE - STUB) * frac;
     let width = TAU / 24.0;
     let start = hour as f64 * width + GAP - TAU / 4.0;
@@ -463,7 +467,11 @@ fn wedge(hour: usize, plays: i64, peak: i64) -> String {
     let mut points: Vec<String> = (0..=STEPS)
         .map(|i| point(outer, start + (end - start) * i as f64 / STEPS as f64))
         .collect();
-    points.extend((0..=STEPS).rev().map(|i| point(HOLE, start + (end - start) * i as f64 / STEPS as f64)));
+    points.extend(
+        (0..=STEPS)
+            .rev()
+            .map(|i| point(HOLE, start + (end - start) * i as f64 / STEPS as f64)),
+    );
     let fade = if plays > 0 { "" } else { "; opacity: 0.25" };
     format!("clip-path: polygon({}){}", points.join(", "), fade)
 }
