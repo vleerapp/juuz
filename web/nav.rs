@@ -42,7 +42,9 @@ impl Page {
         match self {
             Page::Users => user.admin,
             Page::Library => user.stream || user.admin || user.can_catalogue(),
-            Page::Server => user.can_server() || user.can_scan() || user.can_library(),
+            Page::Server => {
+                user.can_server() || user.can_scan() || user.can_library() || user.can_delete()
+            }
             _ => true,
         }
     }

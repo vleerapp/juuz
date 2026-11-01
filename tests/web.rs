@@ -836,6 +836,68 @@ async fn libraries_page_is_permissioned_and_manages_libraries() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn missing_songs_are_kept_until_removed_with_delete_permission() {
+    let h = Harness::new();
+    h.ok("createUser", "username=bob&password=bobpw").await;
+    h.ok(
+        "createUser",
+        "username=dee&password=deepw&juuzDeleteRole=true",
+    )
+    .await;
+    let root = h.music.path();
+    let gone = make_track(
+        root,
+        "A/2000 - X/01 - Gone.wav",
+        61,
+        &Tags {
+            title: Some("Gone"),
+            artist: Some("A"),
+            album: Some("X"),
+            track: Some(1),
+            ..Default::default()
+        },
+    );
+    make_track(
+        root,
+        "A/2000 - X/02 - Kept.wav",
+        62,
+        &Tags {
+            title: Some("Kept"),
+            artist: Some("A"),
+            album: Some("X"),
+            track: Some(2),
+            ..Default::default()
+        },
+    );
+    h.scan().await;
+    std::fs::remove_file(gone).unwrap();
+    h.scan().await;
+    let count = |h: &Harness| {
+        let h = h.server.state.db.clone();
+        async move {
+            h.run(|c| Ok(c.query_row("SELECT COUNT(*) FROM songs", [], |r| r.get::<_, i64>(0))?))
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(count(&h).await, 2);
+
+    let bob = login(&h, "bob", "bobpw").await;
+    let dee = login(&h, "dee", "deepw").await;
+    let denied = post(&h, "/server/libraries/missing", Some(&bob), "id=1").await;
+    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(count(&h).await, 2);
+
+    let shown = page(&h, "/server", Some(&dee)).await;
+    assert_eq!(shown.status, StatusCode::OK);
+    assert!(shown.text().contains("remove missing songs"));
+
+    let done = post(&h, "/server/libraries/missing", Some(&dee), "id=1").await;
+    assert_eq!(location(&done), "/server?n=missing-removed");
+    assert_eq!(count(&h).await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn player_streams_with_the_session_cookie_only() {
     let h = Harness::new();
     make_track(

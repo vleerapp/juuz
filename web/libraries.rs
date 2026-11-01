@@ -109,6 +109,12 @@ async fn library_row(row: &Row, me: &User, tz: i64) -> Result<impl View> {
                         <button>"scan"</button>
                     </form>
                 }
+                if me.can_delete() && online {
+                    <form method="post" action="/server/libraries/missing" data-confirm="">
+                        <input type="hidden" name="id" value=(id.as_str())>
+                        <button class="ghost danger">"remove missing songs"</button>
+                    </form>
+                }
                 if me.admin && library.id != libraries::DEFAULT_ID {
                     <form method="post" action="/server/libraries/delete">
                         <input type="hidden" name="id" value=(id.as_str())>
@@ -254,9 +260,28 @@ async fn delete_library(cx: &Cx, Form(form): Form<DeleteForm>) -> Result<SeeOthe
     ))
 }
 
+#[route(POST "/server/libraries/missing")]
+async fn remove_missing(cx: &Cx, Form(form): Form<DeleteForm>) -> Result<SeeOther> {
+    require_role(cx, User::can_delete).await?;
+    let scanner = state(cx).scanner.clone();
+    let removed = tokio::task::spawn_blocking(move || scanner.remove_missing(form.id))
+        .await
+        .map_err(|e| fail(crate::error::ApiError::generic(e.to_string())))?
+        .map_err(fail)?;
+    Ok(back(
+        Page::Server,
+        if removed.is_some() {
+            Notice::MissingRemoved
+        } else {
+            Notice::Invalid
+        },
+    ))
+}
+
 pub fn routes(b: RouterBuilder) -> RouterBuilder {
     b.route(create_library)
         .route(update_library)
         .route(scan_library)
         .route(delete_library)
+        .route(remove_missing)
 }

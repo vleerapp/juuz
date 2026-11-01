@@ -36,10 +36,11 @@ pub enum Notice {
     CatalogueOff,
     PlaylistSaved,
     PlaylistDeleted,
+    MissingRemoved,
 }
 
 impl Notice {
-    const EACH: [Notice; 32] = [
+    const EACH: [Notice; 33] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -72,6 +73,7 @@ impl Notice {
         Notice::CatalogueOff,
         Notice::PlaylistSaved,
         Notice::PlaylistDeleted,
+        Notice::MissingRemoved,
     ];
 
     pub fn code(self) -> &'static str {
@@ -108,6 +110,7 @@ impl Notice {
             Notice::CatalogueOff => "catalogue-off",
             Notice::PlaylistSaved => "playlist-saved",
             Notice::PlaylistDeleted => "playlist-deleted",
+            Notice::MissingRemoved => "missing-removed",
         }
     }
 
@@ -149,6 +152,7 @@ impl Notice {
             Notice::CatalogueOff => "metadata lookup is disabled on this server",
             Notice::PlaylistSaved => "playlist saved",
             Notice::PlaylistDeleted => "playlist deleted",
+            Notice::MissingRemoved => "missing songs removed",
         }
     }
 

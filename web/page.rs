@@ -330,7 +330,10 @@ async fn users_page(cx: &Cx) -> Result<impl View> {
 
 #[page("/server")]
 async fn server_page(cx: &Cx) -> Result<impl View> {
-    let me = require_role(cx, |u| u.can_server() || u.can_scan() || u.can_library()).await?;
+    let me = require_role(cx, |u| {
+        u.can_server() || u.can_scan() || u.can_library() || u.can_delete()
+    })
+    .await?;
     let notice = notice_of(cx)?;
     let status = state(cx).scanner.status().map_err(fail)?;
     let libraries = state(cx)
@@ -1077,7 +1080,7 @@ async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl 
                     </form>
                 )
             }
-            if board.me.can_library() || board.me.can_scan() {
+            if board.me.can_library() || board.me.can_scan() || board.me.can_delete() {
                 libraries_panel(me: &board.me, rows: &board.libraries, scanning: board.scan.scanning, tz: board.tz)
             }
         )
