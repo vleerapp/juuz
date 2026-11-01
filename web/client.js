@@ -15,7 +15,7 @@
     const root = document.documentElement;
     const TEXT = "input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea";
     const FOCUSABLE =
-      "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), summary, [data-copy], .slider";
+      "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), summary, [data-copy], [data-rename-open], .slider";
     const MAX_COLS = 2000;
     const gauge = (css) => {
       let el = null;
@@ -222,6 +222,11 @@
       if ((e.key === "Enter" || e.key === "c") && el && el.matches("[data-copy]")) {
         e.preventDefault();
         copy(el);
+        return;
+      }
+      if (e.key === "Enter" && el && el.matches("[data-rename-open]")) {
+        e.preventDefault();
+        el.click();
         return;
       }
       if (e.key === "Enter" && el && (el.type === "checkbox" || el.type === "radio")) {

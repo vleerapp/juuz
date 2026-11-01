@@ -340,11 +340,9 @@
     gain: el.dataset.gain ? Number(el.dataset.gain) : null,
   });
 
-  const playAlbum = async (id) => {
+  const playFrom = async (url) => {
     try {
-      const res = await fetch(`/library?view=songs&status=all&album=${encodeURIComponent(id)}`, {
-        credentials: "same-origin",
-      });
+      const res = await fetch(url, { credentials: "same-origin" });
       const doc = new DOMParser().parseFromString(await res.text(), "text/html");
       const items = [...doc.querySelectorAll("[data-queue] [data-play]")];
       if (!items.length) return;
@@ -357,7 +355,13 @@
     const album = e.target.closest("[data-play-album]");
     if (album) {
       e.preventDefault();
-      playAlbum(album.dataset.playAlbum);
+      playFrom(`/library?view=songs&status=all&album=${encodeURIComponent(album.dataset.playAlbum)}`);
+      return;
+    }
+    const list = e.target.closest("[data-play-list]");
+    if (list) {
+      e.preventDefault();
+      playFrom(`/library?view=playlists&playlist=${encodeURIComponent(list.dataset.playList)}`);
       return;
     }
     const all = e.target.closest("[data-playall]");
@@ -524,15 +528,16 @@
     const form = e.target;
     if (e.defaultPrevented || !current() || !form.matches?.("form")) return;
     if (form.method.toLowerCase() !== "post") return;
-    const path = new URL(form.action, location.href).pathname;
+    const target = e.submitter?.formAction || form.action;
+    const path = new URL(target, location.href).pathname;
     if (path === "/login" || path === "/logout") return;
     e.preventDefault();
     try {
-      const res = await fetch(form.action, {
+      const res = await fetch(target, {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams(new FormData(form)),
+        body: new URLSearchParams(new FormData(form, e.submitter)),
       });
       const doc = new DOMParser().parseFromString(await res.text(), "text/html");
       const next = doc.querySelector(".screen");
@@ -792,6 +797,334 @@
       render();
     }
   }).observe(document.body, { childList: true });
+
+  let picked = [];
+  let pickTarget = "";
+  let picking = 0;
+  const renderPicks = () => {
+    const form = document.querySelector("form[data-pick]");
+    const target = form ? form.elements.id.value : "";
+    if (target !== pickTarget) {
+      pickTarget = target;
+      picked = [];
+    }
+    document.querySelectorAll("[data-pick]:not(form)").forEach((btn) => {
+      const at = picked.indexOf(btn.dataset.pick);
+      const pressed = at >= 0 ? "true" : "false";
+      if (btn.getAttribute("aria-pressed") !== pressed) btn.setAttribute("aria-pressed", pressed);
+      const n = btn.querySelector(".n");
+      const text = at >= 0 ? String(at + 1) : "";
+      if (n && n.textContent !== text) n.textContent = text;
+    });
+    if (!form) return;
+    const label = `add ${picked.length} song${picked.length === 1 ? "" : "s"}`;
+    const submit = form.querySelector("button");
+    if (submit.textContent !== label) submit.textContent = label;
+    submit.disabled = picked.length === 0;
+  };
+  const LONG_PRESS = 350;
+  const TOUCH_SLOP = 8;
+  const MOUSE_SLOP = 4;
+  const EDGE = 64;
+  let press = null;
+  let drag = null;
+  let quiet = 0;
+
+  const reorderRow = (el) => {
+    const row = el?.closest?.(".row[data-slot]");
+    return row && row.dataset.slot !== "" ? row : null;
+  };
+
+  const place = () => {
+    const d = drag;
+    const listTop = d.top0 - window.scrollY;
+    const centre = d.y - d.grab + d.height / 2;
+    const over = Math.max(0, Math.min(d.rows.length - 1, Math.floor((centre - listTop) / d.pitch)));
+    if (over !== d.over) {
+      d.over = over;
+      if (navigator.vibrate) navigator.vibrate(4);
+    }
+    d.rows.forEach((row, i) => {
+      let shift = 0;
+      if (d.from < d.over && i > d.from && i <= d.over) shift = -d.pitch;
+      if (d.from > d.over && i >= d.over && i < d.from) shift = d.pitch;
+      row.style.transform = shift ? `translateY(${shift}px)` : "";
+    });
+    d.clone.style.transform = `translateY(${d.y - d.grab}px)`;
+  };
+
+  const frame = () => {
+    if (!drag) return;
+    const speed = (EDGE - Math.min(drag.y, window.innerHeight - drag.y)) / EDGE;
+    if (speed > 0) window.scrollBy(0, (drag.y < EDGE ? -1 : 1) * Math.min(1, speed) * 18);
+    place();
+    drag.raf = requestAnimationFrame(frame);
+  };
+
+  const beginDrag = (row, x, y) => {
+    const rows = [...row.parentElement.children].filter((r) => r.matches(".row[data-slot]"));
+    const rects = rows.map((r) => r.getBoundingClientRect());
+    const box = row.getBoundingClientRect();
+    const clone = row.cloneNode(true);
+    clone.classList.add("floating");
+    Object.assign(clone.style, {
+      position: "fixed",
+      left: `${box.left}px`,
+      top: "0",
+      width: `${box.width}px`,
+      height: `${box.height}px`,
+      transform: `translateY(${box.top}px)`,
+      zIndex: "50",
+      pointerEvents: "none",
+    });
+    document.body.append(clone);
+    row.classList.add("lifted");
+    rows.forEach((r) => r.classList.add("sliding"));
+    const from = rows.indexOf(row);
+    drag = {
+      row,
+      rows,
+      from,
+      over: from,
+      clone,
+      x,
+      y,
+      grab: y - box.top,
+      height: box.height,
+      pitch: rows.length > 1 ? rects[1].top - rects[0].top : box.height,
+      top0: rects[0].top + window.scrollY,
+      raf: 0,
+    };
+    document.documentElement.classList.add("reordering");
+    if (navigator.vibrate) navigator.vibrate(12);
+    frame();
+  };
+
+  const endDrag = (commit) => {
+    const d = drag;
+    if (!d) return;
+    drag = null;
+    cancelAnimationFrame(d.raf);
+    quiet = performance.now() + 400;
+    const done = () => {
+      d.clone.remove();
+      d.row.classList.remove("lifted");
+      d.rows.forEach((r) => {
+        r.classList.remove("sliding");
+        r.style.transform = "";
+      });
+      document.documentElement.classList.remove("reordering");
+    };
+    const moved = commit && d.over !== d.from;
+    const slot = moved ? d.over : d.from;
+    d.clone.style.transition = "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+    d.clone.style.transform = `translateY(${d.top0 - window.scrollY + slot * d.pitch}px)`;
+    setTimeout(() => {
+      if (!moved) return done();
+      const anchor = d.rows[d.over];
+      const index = Number(d.row.dataset.slot);
+      const to = Number(anchor.dataset.slot);
+      const body = new URLSearchParams({
+        id: d.row.querySelector("input[name=id]").value,
+        song: d.row.dataset.song,
+        index: String(index),
+        to: String(to),
+      });
+      d.rows.forEach((r) => {
+        r.classList.remove("sliding");
+        r.style.transform = "";
+        const slot = Number(r.dataset.slot);
+        let next = slot;
+        if (r === d.row) next = to;
+        else if (index < to && slot > index && slot <= to) next = slot - 1;
+        else if (index > to && slot >= to && slot < index) next = slot + 1;
+        r.dataset.slot = String(next);
+        const hidden = r.querySelector("input[name=index]");
+        if (hidden) hidden.value = String(next);
+      });
+      if (d.from < d.over) anchor.after(d.row);
+      else anchor.before(d.row);
+      done();
+      fetch("/library/playlists/shift", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+        redirect: "manual",
+      })
+        .then((res) => {
+          if (res.status !== 204) location.reload();
+        })
+        .catch(() => location.reload());
+    }, 170);
+  };
+
+  const clearPress = () => {
+    if (press) clearTimeout(press.timer);
+    press = null;
+  };
+
+  document.addEventListener("pointerdown", (e) => {
+    if (drag || e.button > 0) return;
+    const row = reorderRow(e.target);
+    if (!row) return;
+    const touch = e.pointerType === "touch";
+    if (touch ? e.target.closest("form") : e.target.closest("a, button, input, select, textarea, label")) return;
+    clearPress();
+    press = { row, x: e.clientX, y: e.clientY, touch, timer: 0 };
+    if (touch) {
+      press.timer = setTimeout(() => {
+        const p = press;
+        press = null;
+        if (p) beginDrag(p.row, p.x, p.y);
+      }, LONG_PRESS);
+    }
+  });
+
+  document.addEventListener("pointermove", (e) => {
+    if (drag) {
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      return;
+    }
+    if (!press) return;
+    const far = Math.hypot(e.clientX - press.x, e.clientY - press.y);
+    if (press.touch) {
+      if (far > TOUCH_SLOP) clearPress();
+      return;
+    }
+    if (far > MOUSE_SLOP) {
+      const p = press;
+      clearPress();
+      beginDrag(p.row, e.clientX, e.clientY);
+    }
+  });
+
+  document.addEventListener("pointerup", () => {
+    clearPress();
+    endDrag(true);
+  });
+  document.addEventListener("pointercancel", () => {
+    clearPress();
+    endDrag(false);
+  });
+  document.addEventListener(
+    "touchmove",
+    (e) => {
+      if (drag && e.cancelable) e.preventDefault();
+    },
+    { passive: false },
+  );
+  document.addEventListener("contextmenu", (e) => {
+    if (drag || press?.touch) e.preventDefault();
+  });
+  document.addEventListener("dragstart", (e) => {
+    if (reorderRow(e.target)) e.preventDefault();
+  });
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (performance.now() < quiet) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true,
+  );
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape" && drag) {
+        e.preventDefault();
+        e.stopPropagation();
+        endDrag(false);
+      }
+    },
+    true,
+  );
+
+  const armed = new WeakMap();
+  document.addEventListener(
+    "submit",
+    (e) => {
+      const form = e.target;
+      if (!form.matches?.("form[data-confirm]")) return;
+      const btn = form.querySelector("button");
+      if (form.dataset.armed) {
+        clearTimeout(armed.get(form));
+        delete form.dataset.armed;
+        return;
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      form.dataset.armed = "1";
+      btn.dataset.label = btn.textContent;
+      btn.textContent = "confirm delete";
+      armed.set(
+        form,
+        setTimeout(() => {
+          delete form.dataset.armed;
+          btn.textContent = btn.dataset.label;
+        }, 5000),
+      );
+    },
+    true,
+  );
+  document.addEventListener("mousedown", (e) => {
+    if (e.target.closest("[data-pick]:not(form)")) e.preventDefault();
+  });
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-pick]:not(form)");
+    if (!btn) return;
+    e.preventDefault();
+    const at = picked.indexOf(btn.dataset.pick);
+    if (at >= 0) picked.splice(at, 1);
+    else picked.push(btn.dataset.pick);
+    renderPicks();
+  });
+  document.addEventListener(
+    "submit",
+    (e) => {
+      const form = e.target;
+      if (!form.matches?.("form[data-pick]")) return;
+      if (!picked.length) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      form.elements.songs.value = picked.join(",");
+      picked = [];
+    },
+    true,
+  );
+  new MutationObserver(() => {
+    cancelAnimationFrame(picking);
+    picking = requestAnimationFrame(renderPicks);
+  }).observe(document.body, { childList: true, subtree: true });
+
+  document.addEventListener("click", (e) => {
+    const name = e.target.closest("[data-rename-open]");
+    if (!name) return;
+    const form = name.closest("form[data-rename]");
+    form.setAttribute("data-open", "");
+    const input = form.elements.name;
+    input.focus();
+    input.select();
+  });
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape") return;
+      const form = e.target.closest?.("form[data-rename][data-open]");
+      if (!form) return;
+      e.preventDefault();
+      e.stopPropagation();
+      form.elements.name.value = form.elements.name.defaultValue;
+      form.removeAttribute("data-open");
+      form.querySelector("[data-rename-open]").focus();
+    },
+    true,
+  );
 
   window.addEventListener("juuz:navigated", () => {
     if (current()) {
