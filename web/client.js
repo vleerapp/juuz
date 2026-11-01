@@ -52,13 +52,16 @@
       place();
     };
 
-    const focusables = () =>
-      [...document.querySelectorAll(FOCUSABLE)].filter((el) => {
+    const focusables = () => {
+      const open = document.querySelector(".select[data-open]");
+      const scope = open && open.contains(document.activeElement) ? open : document;
+      return [...scope.querySelectorAll(FOCUSABLE)].filter((el) => {
         const folded = el.closest("details:not([open])");
         if (folded && el !== folded.firstElementChild) return false;
         const box = el.getBoundingClientRect();
         return box.width > 0 || box.height > 0;
       });
+    };
 
     const copy = async (el) => {
       const text = el.textContent.trim();
@@ -97,19 +100,35 @@
     let trail = [];
     let goalX = null;
     let expected = null;
+    let last = null;
 
     document.addEventListener("focusin", (e) => {
       anchor = null;
-      if (e.target !== expected) {
+      if (e.target !== expected && e.target !== last) {
         trail = [];
         goalX = null;
       }
       expected = null;
+      last = e.target;
     });
 
     const focusTo = (target) => {
       expected = target;
       target.focus();
+    };
+
+    const sameLine = (a, b, ea, eb) => {
+      const rowA = ea?.closest(".row");
+      if (rowA && rowA === eb?.closest(".row")) return true;
+      const ma = a.top + a.height / 2;
+      const mb = b.top + b.height / 2;
+      const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      return (
+        Math.abs(ma - mb) < rowHeight() / 2 ||
+        overlap > 0.25 * Math.min(a.height, b.height) ||
+        (mb > a.top && mb < a.bottom) ||
+        (ma > b.top && ma < b.bottom)
+      );
     };
 
     const go = (dir) => {
@@ -137,6 +156,7 @@
       }
       const half = rowHeight() / 2;
       const from = el.getBoundingClientRect();
+      const mid = from.top + from.height / 2;
       const x = goalX ?? from.left;
       const col = columnOf(el);
       let best = null;
@@ -147,30 +167,39 @@
           bestScore = score;
         }
       };
+      const ahead = [];
       for (const cand of list) {
         if (cand === el) continue;
         const to = cand.getBoundingClientRect();
         const dy = to.top - from.top;
         const dx = to.left - from.left;
-        const aligned =
-          (to.left < x + from.width && to.right > x) || Math.abs(to.left - x) <= 2 * cw;
-        const off = aligned ? 0 : 1e9;
-        if (dir === "down" && dy > half && columnOf(cand) === col) consider(cand, off + dy * 1e4 + Math.abs(to.left - x));
-        else if (dir === "up" && dy < -half && columnOf(cand) === col) consider(cand, off - dy * 1e4 + Math.abs(to.left - x));
-        else if (dir === "right" && Math.abs(dy) < half && dx > 1) consider(cand, dx);
-        else if (dir === "left" && Math.abs(dy) < half && dx < -1) consider(cand, -dx);
+        if (vertical) {
+          const beyond = dir === "down" ? dy > half : dy < -half;
+          if (beyond && columnOf(cand) === col && !sameLine(from, to, el, cand)) ahead.push({ cand, to, dy: Math.abs(dy) });
+        } else if (sameLine(from, to, el, cand)) {
+          const gap = dir === "right" ? dx : -dx;
+          if (gap > 1) consider(cand, gap * 1e3 + Math.abs(to.top + to.height / 2 - mid));
+        }
       }
-      if (!best && vertical) {
-        const other = list.filter((cand) => (dir === "down" ? columnOf(cand) > col : columnOf(cand) < col));
-        if (other.length) {
-          const target = dir === "down"
-            ? Math.min(...other.map(columnOf))
-            : Math.max(...other.map(columnOf));
-          for (const cand of other) {
+      if (ahead.length) {
+        ahead.sort((a, b) => a.dy - b.dy);
+        const near = ahead[0];
+        for (const { cand, to } of ahead) {
+          if (!sameLine(near.to, to, near.cand, cand)) continue;
+          const miss = x >= to.left && x <= to.right ? 0 : Math.min(Math.abs(to.left - x), Math.abs(to.right - x));
+          consider(cand, miss * 1e4 + Math.abs(to.left - x));
+        }
+      }
+      if (!best && !vertical) {
+        const beyond = list.filter((cand) => (dir === "right" ? columnOf(cand) > col : columnOf(cand) < col));
+        if (beyond.length) {
+          const target = dir === "right"
+            ? Math.min(...beyond.map(columnOf))
+            : Math.max(...beyond.map(columnOf));
+          for (const cand of beyond) {
             if (columnOf(cand) !== target) continue;
             const to = cand.getBoundingClientRect();
-            const row = dir === "down" ? to.top : -to.top;
-            consider(cand, row * 1e4 + Math.abs(to.left - x));
+            consider(cand, Math.abs(to.top + to.height / 2 - mid) * 1e3 + (dir === "right" ? to.left : -to.left));
           }
         }
       }

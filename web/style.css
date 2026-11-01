@@ -310,7 +310,7 @@ code {
   }
 }
 
-:is(a, button, summary, code, input[type="checkbox"]):focus-visible {
+:is(a, button, summary, code, input[type="checkbox"], [data-rename-open]):focus-visible {
   background: var(--text) !important;
   color: var(--bg) !important;
   filter: none !important;
