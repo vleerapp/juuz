@@ -14,13 +14,18 @@ use super::auth::{fail, require_role, state};
 use super::nav::Page;
 use super::notice::{Notice, back};
 use super::page::{anchor, field, jump, notice_of, shell};
+use super::playlists::{
+    self, Playlist, Shelf, adding_note, playlist_create, playlist_head, playlist_tile,
+};
 use crate::api::model::{
     AlbumRow, SongRow, album_artist_map, album_genre_map, albums_by_ids, albums_where,
     artists_by_ids, artists_where, load_extras, songs_by_ids, songs_where, sv,
 };
+use crate::api::playlists as store;
 use crate::db::libraries::{self, artist_visible, visible};
 use crate::db::users::User;
 use crate::omm::{self, SongRes};
+use crate::search;
 
 pub const SCRIPT: &str = include_str!("player.js");
 const CHUNK: i64 = 60;
@@ -32,6 +37,7 @@ enum View_ {
     Albums,
     Songs,
     Artists,
+    Playlists,
 }
 
 type Names = Vec<(String, String)>;
@@ -43,6 +49,8 @@ struct Query {
     status: Option<String>,
     album: Option<String>,
     artist: Option<String>,
+    playlist: Option<String>,
+    add: Option<String>,
     sort: Option<String>,
     dir: Option<String>,
     offset: Option<i64>,
@@ -96,6 +104,7 @@ struct Board {
     q: String,
     albums_view: bool,
     artists_view: bool,
+    lists_view: bool,
     status: String,
     sort: String,
     desc: bool,
@@ -107,6 +116,8 @@ struct Board {
     songs: Vec<Song>,
     albums: Vec<Album>,
     people: Vec<Artist>,
+    shelf: Shelf,
+    adding: Option<Playlist>,
     counts: Counts,
     lookup: bool,
 }
@@ -115,12 +126,12 @@ pub fn script_version() -> u64 {
     xxhash_rust::xxh3::xxh3_64(SCRIPT.as_bytes())
 }
 
-fn clock(ms: i64) -> String {
+pub(super) fn clock(ms: i64) -> String {
     let s = ms / 1000;
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-fn escape(s: &str) -> String {
+pub(super) fn escape(s: &str) -> String {
     s.bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
@@ -232,6 +243,7 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
     let view = match query.view.as_deref() {
         Some("songs") => View_::Songs,
         Some("artists") => View_::Artists,
+        Some("playlists") => View_::Playlists,
         _ => View_::Albums,
     };
     let album_view = !album_id.is_empty();
@@ -242,7 +254,7 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
         match view {
             View_::Albums => &["title", "year", "added"],
             View_::Songs => &["title", "album", "year", "format", "time"],
-            View_::Artists => &[],
+            View_::Artists | View_::Playlists => &[],
         }
     };
     let sort = match query.sort.as_deref() {
@@ -254,19 +266,47 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
     let offset = query.offset.unwrap_or(0).max(0);
     let st = state(cx);
     let uid = me.id.clone();
+    let adding = match query.add.clone() {
+        Some(id)
+            if view == View_::Songs
+                && album_id.is_empty()
+                && artist_id.is_empty()
+                && (me.playlist || me.admin) =>
+        {
+            let owner = me.clone();
+            st.db
+                .run(move |c| {
+                    Ok(store::owned(c, &id, &owner)
+                        .ok()
+                        .map(|r| playlists::playlist(&r, &owner)))
+                })
+                .await
+                .map_err(fail)?
+        }
+        _ => None,
+    };
     let (search, filter, wanted, sorting) = (q.clone(), status.clone(), album_id, sort.clone());
     let credited = artist_id;
-    let (songs, albums, heading, person, people, counts, total, named) = st
+    let opened = query.playlist.clone().unwrap_or_default();
+    let viewer = me.clone();
+    let (songs, albums, heading, person, people, shelf, counts, total, named) = st
         .db
         .run(move |c| {
-            let like = format!("%{}%", search.replace(['%', '_'], ""));
+            let fuzzy = search::Query::parse(&search);
             let mut songs = Vec::new();
             let mut albums = Vec::new();
             let mut heading = None;
             let mut person = None;
             let mut people = Vec::new();
+            let mut shelf = Shelf::default();
             let mut total = 0;
             let dir = if desc { "DESC" } else { "ASC" };
+            let song_text = |s: &SongRow| {
+                (
+                    s.title.clone(),
+                    search::song_haystack(&s.title, &s.display_artist, &s.album),
+                )
+            };
             if !wanted.is_empty() {
                 let found = albums_by_ids(c, &uid, std::slice::from_ref(&wanted))?;
                 if let Some(a) = found.first() {
@@ -277,56 +317,47 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
                         .unwrap_or_default()
                         .join(", ");
                     heading = Some(head);
-                    let mut args = vec![sv(&wanted)];
-                    let mut clause = "WHERE s.album_id = ?".to_string();
-                    if !search.is_empty() {
-                        clause.push_str(" AND (s.title LIKE ? OR s.display_artist LIKE ?)");
-                        args.extend([sv(&like), sv(&like)]);
-                    }
                     songs = songs_where(
                         c,
                         &uid,
-                        &format!("{clause} ORDER BY s.disc, s.track, s.title COLLATE NOCASE"),
-                        args,
+                        "WHERE s.album_id = ? ORDER BY s.disc, s.track, s.title COLLATE NOCASE",
+                        vec![sv(&wanted)],
                     )?;
+                    if let Some(q) = &fuzzy {
+                        songs = q.order(search::Mode::Song, songs, song_text);
+                    }
                     total = songs.len() as i64;
                 }
             } else if !credited.is_empty() {
                 let found = artists_by_ids(c, &uid, std::slice::from_ref(&credited))?;
                 if let Some(a) = found.first() {
-                    let mut album_clause = "WHERE (EXISTS (SELECT 1 FROM album_artists aa
-                            WHERE aa.album_id = al.id AND aa.artist_id = ?)
-                        OR EXISTS (SELECT 1 FROM songs sx JOIN song_artists sa ON sa.song_id = sx.id
-                            WHERE sx.album_id = al.id AND sa.artist_id = ?))"
-                        .to_string();
-                    let mut album_args = vec![sv(&credited), sv(&credited)];
-                    let mut song_clause = "WHERE EXISTS (SELECT 1 FROM song_artists sa
-                            WHERE sa.song_id = s.id AND sa.artist_id = ?)"
-                        .to_string();
-                    let mut song_args = vec![sv(&credited)];
-                    if !search.is_empty() {
-                        album_clause.push_str(" AND al.title LIKE ?");
-                        album_args.push(sv(&like));
-                        song_clause.push_str(" AND (s.title LIKE ? OR al.title LIKE ?)");
-                        song_args.extend([sv(&like), sv(&like)]);
-                    }
-                    let rows = albums_where(
+                    let mut rows = albums_where(
                         c,
                         &uid,
-                        &format!("{album_clause} ORDER BY al.year DESC, al.title COLLATE NOCASE"),
-                        album_args,
+                        "WHERE (EXISTS (SELECT 1 FROM album_artists aa
+                            WHERE aa.album_id = al.id AND aa.artist_id = ?)
+                        OR EXISTS (SELECT 1 FROM songs sx JOIN song_artists sa ON sa.song_id = sx.id
+                            WHERE sx.album_id = al.id AND sa.artist_id = ?))
+                         ORDER BY al.year DESC, al.title COLLATE NOCASE",
+                        vec![sv(&credited), sv(&credited)],
                     )?;
-                    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-                    let artists = album_artist_map(c, &ids)?;
-                    albums = rows.iter().map(|r| album(r, &artists)).collect();
                     songs = songs_where(
                         c,
                         &uid,
-                        &format!(
-                            "{song_clause} ORDER BY al.year DESC, al.title COLLATE NOCASE, s.disc, s.track, s.title COLLATE NOCASE"
-                        ),
-                        song_args,
+                        "WHERE EXISTS (SELECT 1 FROM song_artists sa
+                            WHERE sa.song_id = s.id AND sa.artist_id = ?)
+                         ORDER BY al.year DESC, al.title COLLATE NOCASE, s.disc, s.track, s.title COLLATE NOCASE",
+                        vec![sv(&credited)],
                     )?;
+                    if let Some(q) = &fuzzy {
+                        rows = q.order(search::Mode::Plain, rows, |r| {
+                            (r.title.clone(), r.title.clone())
+                        });
+                        songs = q.order(search::Mode::Song, songs, song_text);
+                    }
+                    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+                    let artists = album_artist_map(c, &ids)?;
+                    albums = rows.iter().map(|r| album(r, &artists)).collect();
                     person = Some(Artist {
                         id: a.id.clone(),
                         name: a.name.clone(),
@@ -335,16 +366,78 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
                     });
                     total = (albums.len() + songs.len()) as i64;
                 }
-            } else if view == View_::Artists {
-                let (clause, args) = if search.is_empty() {
-                    (String::new(), vec![])
+            } else if view == View_::Playlists {
+                let row = if opened.is_empty() {
+                    None
                 } else {
-                    ("WHERE ar.name LIKE ?".to_string(), vec![sv(&like)])
+                    store::fetch(c, &opened, &viewer).ok()
                 };
-                let tail = format!(
-                    "{clause} ORDER BY ar.name COLLATE NOCASE LIMIT {limit} OFFSET {offset}"
-                );
-                let rows = artists_where(c, &uid, &tail, args.clone())?;
+                if let Some(row) = row {
+                    let ids = store::song_ids(c, &row.id)?;
+                    let rows = songs_by_ids(c, &uid, &ids)?;
+                    let present: std::collections::HashSet<&str> =
+                        rows.iter().map(|r| r.id.as_str()).collect();
+                    let slots: Vec<usize> = ids
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, id)| present.contains(id.as_str()))
+                        .map(|(i, _)| i)
+                        .collect();
+                    let mut paired: Vec<(SongRow, usize)> = rows.into_iter().zip(slots).collect();
+                    if let Some(q) = &fuzzy {
+                        paired = q.order(search::Mode::Song, paired, |(s, _)| song_text(s));
+                    }
+                    let (kept, slots): (Vec<SongRow>, Vec<usize>) = paired.into_iter().unzip();
+                    total = kept.len() as i64;
+                    songs = kept;
+                    shelf.slots = slots;
+                    shelf.open = Some(playlists::playlist(&row, &viewer));
+                } else {
+                    let mut stmt = c.prepare(&format!(
+                        "{} WHERE (p.owner_id = ?1 OR p.public = 1 OR ?2 = 1)
+                         ORDER BY p.name COLLATE NOCASE",
+                        store::SELECT
+                    ))?;
+                    let mut rows = stmt
+                        .query_map(rusqlite::params![uid, viewer.admin], store::map)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    if let Some(q) = &fuzzy {
+                        rows = q.order(search::Mode::Plain, rows, |r| {
+                            (r.name.clone(), r.name.clone())
+                        });
+                    }
+                    shelf.lists = rows.iter().map(|r| playlists::playlist(r, &viewer)).collect();
+                    total = shelf.lists.len() as i64;
+                }
+            } else if view == View_::Artists {
+                let rows = match &fuzzy {
+                    Some(q) => {
+                        let ranked = q.rank(search::Mode::Plain, &search::artist_docs(c, &uid, None)?);
+                        total = ranked.len() as i64;
+                        let page: Vec<String> = ranked
+                            .into_iter()
+                            .skip(offset as usize)
+                            .take(limit as usize)
+                            .collect();
+                        artists_by_ids(c, &uid, &page)?
+                    }
+                    None => {
+                        total = c.query_row(
+                            concat!(
+                                "SELECT COUNT(*) FROM artists ar WHERE ",
+                                artist_visible!("ar.id")
+                            ),
+                            [&uid],
+                            |r| r.get(0),
+                        )?;
+                        artists_where(
+                            c,
+                            &uid,
+                            &format!("ORDER BY ar.name COLLATE NOCASE LIMIT {limit} OFFSET {offset}"),
+                            vec![],
+                        )?
+                    }
+                };
                 let ids: Vec<String> = rows.iter().map(|a| a.id.clone()).collect();
                 let tally = song_counts(c, &uid, &ids)?;
                 people = rows
@@ -360,100 +453,122 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
                         image: a.has_image,
                     })
                     .collect();
-                let counting = format!(
-                    "SELECT COUNT(*) FROM artists ar WHERE {}{}",
-                    artist_visible!("ar.id"),
-                    if search.is_empty() {
-                        ""
-                    } else {
-                        " AND ar.name LIKE ?"
-                    }
-                );
-                let mut all = vec![sv(&uid)];
-                all.extend(args);
-                total = c.query_row(&counting, rusqlite::params_from_iter(all), |r| r.get(0))?;
             } else if view == View_::Songs {
-                let mut wheres: Vec<&str> = Vec::new();
-                let mut args = Vec::new();
-                if !search.is_empty() {
-                    wheres.push("(s.title LIKE ? OR s.display_artist LIKE ? OR al.title LIKE ?)");
-                    args.extend([sv(&like), sv(&like), sv(&like)]);
-                }
-                match filter.as_str() {
-                    "matched" => wheres.push("s.omm_id IS NOT NULL"),
-                    "unmatched" => wheres.push("s.omm_id IS NULL"),
-                    _ => {}
-                }
-                let clause = if wheres.is_empty() {
-                    String::new()
-                } else {
-                    format!("WHERE {}", wheres.join(" AND "))
+                let status = match filter.as_str() {
+                    "matched" => " AND s.omm_id IS NOT NULL",
+                    "unmatched" => " AND s.omm_id IS NULL",
+                    _ => "",
                 };
-                let order = match sorting.as_str() {
-                    "title" => format!(
-                        "s.title COLLATE NOCASE {dir}, al.title COLLATE NOCASE, s.disc, s.track"
-                    ),
-                    "album" => format!(
-                        "al.title COLLATE NOCASE {dir}, s.disc {dir}, s.track {dir}, s.title COLLATE NOCASE"
-                    ),
-                    "year" => format!(
-                        "s.year {dir}, al.title COLLATE NOCASE, s.disc, s.track"
-                    ),
-                    "format" => format!("s.suffix {dir}, s.bitrate {dir}, s.title COLLATE NOCASE"),
-                    "time" => format!("s.duration_ms {dir}, s.title COLLATE NOCASE"),
-                    _ => "al.title COLLATE NOCASE, s.disc, s.track, s.title COLLATE NOCASE"
-                        .to_string(),
+                let ranked = match &fuzzy {
+                    Some(q) => Some(q.rank(search::Mode::Song, &search::song_docs(c, &uid, None, status)?)),
+                    None => None,
                 };
-                let tail = format!("{clause} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
-                songs = songs_where(c, &uid, &tail, args.clone())?;
-                let counting = format!(
-                    "SELECT COUNT(*) FROM songs s JOIN albums al ON al.id = s.album_id WHERE {}{}",
-                    visible!("s.library_id"),
-                    if wheres.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" AND {}", wheres.join(" AND "))
+                match ranked {
+                    Some(ids) if sorting.is_empty() => {
+                        total = ids.len() as i64;
+                        let page: Vec<String> = ids
+                            .into_iter()
+                            .skip(offset as usize)
+                            .take(limit as usize)
+                            .collect();
+                        songs = songs_by_ids(c, &uid, &page)?;
                     }
-                );
-                let mut all = vec![sv(&uid)];
-                all.extend(args);
-                total = c.query_row(&counting, rusqlite::params_from_iter(all), |r| r.get(0))?;
+                    ranked => {
+                        let mut wheres: Vec<&str> = Vec::new();
+                        let mut args = Vec::new();
+                        match filter.as_str() {
+                            "matched" => wheres.push("s.omm_id IS NOT NULL"),
+                            "unmatched" => wheres.push("s.omm_id IS NULL"),
+                            _ => {}
+                        }
+                        if let Some(ids) = &ranked {
+                            wheres.push("s.id IN (SELECT value FROM json_each(?))");
+                            args.push(sv(&search::json_ids(ids)));
+                        }
+                        let clause = if wheres.is_empty() {
+                            String::new()
+                        } else {
+                            format!("WHERE {}", wheres.join(" AND "))
+                        };
+                        let order = match sorting.as_str() {
+                            "title" => format!(
+                                "s.title COLLATE NOCASE {dir}, al.title COLLATE NOCASE, s.disc, s.track"
+                            ),
+                            "album" => format!(
+                                "al.title COLLATE NOCASE {dir}, s.disc {dir}, s.track {dir}, s.title COLLATE NOCASE"
+                            ),
+                            "year" => format!(
+                                "s.year {dir}, al.title COLLATE NOCASE, s.disc, s.track"
+                            ),
+                            "format" => format!("s.suffix {dir}, s.bitrate {dir}, s.title COLLATE NOCASE"),
+                            "time" => format!("s.duration_ms {dir}, s.title COLLATE NOCASE"),
+                            _ => "al.title COLLATE NOCASE, s.disc, s.track, s.title COLLATE NOCASE"
+                                .to_string(),
+                        };
+                        let tail = format!("{clause} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
+                        songs = songs_where(c, &uid, &tail, args.clone())?;
+                        let counting = format!(
+                            "SELECT COUNT(*) FROM songs s JOIN albums al ON al.id = s.album_id WHERE {}{}",
+                            visible!("s.library_id"),
+                            if wheres.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" AND {}", wheres.join(" AND "))
+                            }
+                        );
+                        let mut all = vec![sv(&uid)];
+                        all.extend(args);
+                        total = c.query_row(&counting, rusqlite::params_from_iter(all), |r| r.get(0))?;
+                    }
+                }
             } else {
-                let (clause, args) = if search.is_empty() {
-                    (String::new(), vec![])
-                } else {
-                    (
-                        "WHERE (al.title LIKE ? OR EXISTS (SELECT 1 FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
-                            WHERE aa.album_id = al.id AND a.name LIKE ?))"
-                            .to_string(),
-                        vec![sv(&like), sv(&like)],
-                    )
+                let ranked = match &fuzzy {
+                    Some(q) => Some(q.rank(search::Mode::Plain, &search::album_docs(c, &uid, None)?)),
+                    None => None,
                 };
-                let order = match sorting.as_str() {
-                    "year" => "al.year DESC, al.title COLLATE NOCASE",
-                    "added" => "al.created_at DESC, al.title COLLATE NOCASE",
-                    _ => "al.title COLLATE NOCASE",
+                let rows = match ranked {
+                    Some(ids) if sorting.is_empty() => {
+                        total = ids.len() as i64;
+                        let page: Vec<String> = ids
+                            .into_iter()
+                            .skip(offset as usize)
+                            .take(limit as usize)
+                            .collect();
+                        albums_by_ids(c, &uid, &page)?
+                    }
+                    ranked => {
+                        let (clause, args) = match &ranked {
+                            Some(ids) => (
+                                "WHERE al.id IN (SELECT value FROM json_each(?))".to_string(),
+                                vec![sv(&search::json_ids(ids))],
+                            ),
+                            None => (String::new(), vec![]),
+                        };
+                        let order = match sorting.as_str() {
+                            "year" => "al.year DESC, al.title COLLATE NOCASE",
+                            "added" => "al.created_at DESC, al.title COLLATE NOCASE",
+                            _ => "al.title COLLATE NOCASE",
+                        };
+                        let tail = format!("{clause} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
+                        let rows = albums_where(c, &uid, &tail, args.clone())?;
+                        let counting = format!(
+                            "SELECT COUNT(*) FROM albums al WHERE {}{}",
+                            visible!("al.library_id"),
+                            if args.is_empty() {
+                                ""
+                            } else {
+                                " AND al.id IN (SELECT value FROM json_each(?))"
+                            }
+                        );
+                        let mut all = vec![sv(&uid)];
+                        all.extend(args);
+                        total = c.query_row(&counting, rusqlite::params_from_iter(all), |r| r.get(0))?;
+                        rows
+                    }
                 };
-                let tail =
-                    format!("{clause} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
-                let rows = albums_where(c, &uid, &tail, args.clone())?;
                 let ids: Vec<String> = rows.iter().map(|a| a.id.clone()).collect();
                 let artists = album_artist_map(c, &ids)?;
                 albums = rows.iter().map(|a| album(a, &artists)).collect();
-                let counting = format!(
-                    "SELECT COUNT(*) FROM albums al WHERE {}{}",
-                    visible!("al.library_id"),
-                    if search.is_empty() {
-                        String::new()
-                    } else {
-                        " AND (al.title LIKE ? OR EXISTS (SELECT 1 FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
-                            WHERE aa.album_id = al.id AND a.name LIKE ?))"
-                            .to_string()
-                    }
-                );
-                let mut all = vec![sv(&uid)];
-                all.extend(args);
-                total = c.query_row(&counting, rusqlite::params_from_iter(all), |r| r.get(0))?;
             }
             let counts = c.query_row(
                 concat!(
@@ -469,7 +584,7 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
                 },
             )?;
             let named = load_extras(c, &songs)?.artists;
-            Ok((songs, albums, heading, person, people, counts, total, named))
+            Ok((songs, albums, heading, person, people, shelf, counts, total, named))
         })
         .await
         .map_err(fail)?;
@@ -478,6 +593,7 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
         q,
         albums_view: view == View_::Albums && !album_view && !artist_view,
         artists_view: view == View_::Artists && !album_view && !artist_view,
+        lists_view: view == View_::Playlists && !album_view && !artist_view && shelf.open.is_none(),
         status,
         sort,
         desc,
@@ -495,6 +611,8 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
             .collect(),
         albums,
         people,
+        shelf,
+        adding,
         counts,
         lookup: st.omm.is_some(),
     };
@@ -633,7 +751,10 @@ async fn sort_head(
 #[component]
 async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View> {
     let in_artist = board.person.is_some();
-    let view = if board.artists_view || in_artist {
+    let in_list = board.shelf.open.is_some();
+    let view = if board.shelf.open.is_some() || board.lists_view {
+        "playlists"
+    } else if board.artists_view || in_artist {
         "artists"
     } else if board.albums_view {
         "albums"
@@ -662,7 +783,20 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
     let albums_href = at(&q, "albums", "all", "");
     let songs_href = at(&q, "songs", &board.status, "");
     let artists_href = at(&q, "artists", "all", "");
-    let plain_songs = !board.albums_view && !board.artists_view && !in_album && !in_artist;
+    let playlists_href = at(&q, "playlists", "all", "");
+    let list_id = board
+        .shelf
+        .open
+        .as_ref()
+        .map(|p| p.id.clone())
+        .unwrap_or_default();
+    let manage = board.me.playlist || board.me.admin;
+    let plain_songs = !board.albums_view
+        && !board.artists_view
+        && !board.lists_view
+        && !in_list
+        && !in_album
+        && !in_artist;
     let filters = [
         ("all", at_sorted(&q, "songs", "all", "", &board.sort, dir)),
         (
@@ -684,23 +818,35 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
         board.counts.total, board.counts.matched
     );
     let can_play = board.me.stream || board.me.admin;
+    let edit = in_list && manage && board.shelf.open.as_ref().is_some_and(|p| p.mine);
+    let list_edit = if edit { list_id.clone() } else { String::new() };
     let catalogue = board.me.can_catalogue() && board.lookup;
     let show_filters = board.me.can_catalogue() && plain_songs;
-    let back = at(&q, "albums", "all", "");
-    let people_back = at(&q, "artists", "all", "");
+    let add_id = board
+        .adding
+        .as_ref()
+        .map(|p| p.id.clone())
+        .unwrap_or_default();
+    let with_add = |href: String| {
+        if add_id.is_empty() {
+            href
+        } else {
+            format!("{href}&add={}", escape(&add_id))
+        }
+    };
     let heads: Vec<(String, &str, bool, bool)> = ["title", "album", "year", "format", "time"]
         .iter()
         .map(|key| {
             let (sort, dir) = next_sort(&board, key);
             (
-                at_sorted(&q, "songs", &board.status, "", &sort, &dir),
+                with_add(at_sorted(&q, "songs", &board.status, "", &sort, &dir)),
                 *key,
                 board.sort == *key,
                 board.desc,
             )
         })
         .collect();
-    let src = at_sorted(&q, view, &board.status, &album, &board.sort, dir);
+    let src = with_add(at_sorted(&q, view, &board.status, &album, &board.sort, dir));
     let total_text = board.total.to_string();
     let chunk_text = board.chunk.to_string();
     let offset_text = board.offset.to_string();
@@ -716,6 +862,7 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                         jump(href: albums_href, label: "albums", on: board.albums_view || in_album)
                         jump(href: songs_href, label: "songs", on: plain_songs)
                         jump(href: artists_href, label: "artists", on: board.artists_view || in_artist)
+                        jump(href: playlists_href, label: "playlists", on: board.lists_view || in_list)
                         if show_filters {
                             <span class="divider"></span>
                             for (name, href) in filters.iter() {
@@ -738,6 +885,8 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                         <input type="hidden" name="status" value=(board.status.as_str())>
                         <input type="hidden" name="album" value=(album.as_str())>
                         <input type="hidden" name="artist" value=(artist.as_str())>
+                        <input type="hidden" name="playlist" value=(list_id.as_str())>
+                        <input type="hidden" name="add" value=(add_id.as_str())>
                         <input type="hidden" name="sort" value=(board.sort.as_str())>
                         <input type="hidden" name="dir" value=(dir)>
                     </form>
@@ -745,14 +894,25 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                 <div class="summary">
                     <span class="muted">(note.as_str())</span>
                 </div>
+                match &board.adding {
+                    Some(p) => adding_note(list: p),
+                    None => "",
+                }
                 <div class="results" data-swap="results">
                     match &board.heading {
-                        Some(a) => album_head(album: a, play: can_play, back: back.clone()),
+                        Some(a) => album_head(album: a, play: can_play),
                         None => "",
                     }
                     match &board.person {
-                        Some(a) => artist_head(artist: a, play: can_play, back: people_back.clone()),
+                        Some(a) => artist_head(artist: a, play: can_play),
                         None => "",
+                    }
+                    match &board.shelf.open {
+                        Some(p) => playlist_head(list: p, play: can_play, edit: manage),
+                        None => "",
+                    }
+                    if board.lists_view && manage {
+                        playlist_create()
                     }
                     if board.albums_view {
                         <div class="albums" data-more="" data-total=(total_text.as_str()) data-src=(src.as_str()) data-chunk=(chunk_text.as_str())>
@@ -801,6 +961,29 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                                 </div>
                             </div>
                         }
+                    } else if in_list {
+                        <div class="list">
+                            <div class="row head">
+                                <span class="c-cover">"#"</span>
+                                <span class="main">"title"</span>
+                                <span class="c-album wide-only">"album"</span>
+                                <span class="c-year wide-only">"year"</span>
+                                <span class="c-format wide-only">"format"</span>
+                                <span class="c-time"><span class="muted">icon(data: super::icons::DURATION_ICON)</span></span>
+                                if edit { <span class="c-act"></span> }
+                            </div>
+                            <div class="rows" data-queue="">
+                                for (i, s) in board.songs.iter().enumerate() {
+                                    song_row(song: s, play: can_play, catalogue: false, list: list_edit.as_str(), slot: board.shelf.slots.get(i).copied().unwrap_or(0))
+                                }
+                            </div>
+                        </div>
+                    } else if board.lists_view {
+                        <div class="albums">
+                            for p in board.shelf.lists.iter() {
+                                playlist_tile(list: p, play: can_play)
+                            }
+                        </div>
                     } else if board.artists_view {
                         <div class="albums" data-more="" data-total=(total_text.as_str()) data-src=(src.as_str()) data-chunk=(chunk_text.as_str())>
                             for a in board.people.iter() {
@@ -810,6 +993,7 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                     } else {
                         <div class="list">
                             <div class="row head">
+                                if !add_id.is_empty() { <span class="c-pick"></span> }
                                 <span class="c-cover">"#"</span>
                                 <span class="main">sort_head(href: heads[0].0.clone(), label: "title", active: heads[0].2, desc: heads[0].3, clock: false)</span>
                                 <span class="c-album wide-only">sort_head(href: heads[1].0.clone(), label: "album", active: heads[1].2, desc: heads[1].3, clock: false)</span>
@@ -820,7 +1004,7 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                             </div>
                             <div class="rows virtual" data-queue="" data-virtual="" data-total=(total_text.as_str()) data-src=(src.as_str()) data-chunk=(chunk_text.as_str()) data-offset=(offset_text.as_str())>
                                 for s in board.songs.iter() {
-                                    song_row(song: s, play: can_play, catalogue: catalogue)
+                                    song_row(song: s, play: can_play, catalogue: catalogue, adding: add_id.as_str())
                                 }
                             </div>
                         </div>
@@ -835,7 +1019,7 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
 }
 
 #[component]
-async fn album_head(album: &Album, play: bool, back: String) -> Result<impl View> {
+async fn album_head(album: &Album, play: bool) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&album.id));
     Ok(view! {
         <div class="album-head">
@@ -865,7 +1049,6 @@ async fn album_head(album: &Album, play: bool, back: String) -> Result<impl View
                     <span class="muted">(album.genres.as_str())</span>
                 }
                 <nav class="acts">
-                    jump(href: back, label: "back")
                     if play { <button data-playall="">"play all"</button> }
                 </nav>
             </div>
@@ -906,7 +1089,7 @@ async fn album_tile(album: &Album, href: String, play: bool) -> Result<impl View
 }
 
 #[component]
-async fn artist_head(artist: &Artist, play: bool, back: String) -> Result<impl View> {
+async fn artist_head(artist: &Artist, play: bool) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&artist.id));
     Ok(view! {
         <div class="album-head">
@@ -932,7 +1115,6 @@ async fn artist_head(artist: &Artist, play: bool, back: String) -> Result<impl V
                 <strong class="title">(artist.name.as_str())</strong>
                 <span class="muted">(artist.detail.as_str())</span>
                 <nav class="acts">
-                    jump(href: back, label: "back")
                     if play { <button data-playall="">"play all"</button> }
                 </nav>
             </div>
@@ -962,7 +1144,20 @@ async fn artist_tile(artist: &Artist) -> Result<impl View> {
 }
 
 #[component]
-async fn song_row(song: &Song, play: bool, catalogue: bool) -> Result<impl View> {
+async fn song_row(
+    song: &Song,
+    play: bool,
+    catalogue: bool,
+    #[default] list: &str,
+    #[default] slot: usize,
+    #[default] adding: &str,
+) -> Result<impl View> {
+    let index = slot.to_string();
+    let place = if list.is_empty() {
+        String::new()
+    } else {
+        index.clone()
+    };
     let target = format!("/library/candidates?id={}", escape(&song.id));
     let status = match &song.omm_id {
         Some(id) => id.clone(),
@@ -970,7 +1165,12 @@ async fn song_row(song: &Song, play: bool, catalogue: bool) -> Result<impl View>
     };
     let cover_flag = if song.cover { "1" } else { "" };
     Ok(view! {
-        <div class="row">
+        <div class="row" data-slot=(place.as_str()) data-song=(song.id.as_str())>
+            if !adding.is_empty() {
+                <span class="c-pick">
+                    <button type="button" class="pick" data-pick=(song.id.as_str()) aria-pressed="false" aria-label="select"><span class="n"></span></button>
+                </span>
+            }
             <span class="c-cover">
                 if play {
                     <button class="thumb" data-play=(song.id.as_str()) data-title=(song.title.as_str()) data-artist=(song.artist.as_str()) data-album=(song.album.as_str()) data-art=(song.album_id.as_str()) data-cover=(cover_flag) data-gain=(song.gain.as_str()) aria-label="play">
@@ -992,6 +1192,16 @@ async fn song_row(song: &Song, play: bool, catalogue: bool) -> Result<impl View>
                 <span class="c-meta wide-only"><span class="muted">(status.as_str())</span><nav class="choose">jump(href: target, label: "choose")</nav></span>
             }
             <span class="c-time muted">(song.length.as_str())</span>
+            if !list.is_empty() {
+                <span class="c-act">
+                    <form method="post" action="/library/playlists/remove">
+                        <input type="hidden" name="id" value=(list)>
+                        <input type="hidden" name="song" value=(song.id.as_str())>
+                        <input type="hidden" name="index" value=(index.as_str())>
+                        <button class="ghost danger" aria-label="remove from playlist">"drop"</button>
+                    </form>
+                </span>
+            }
         </div>
     })
 }
@@ -1169,7 +1379,6 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
                         <span class="muted">(detail.as_str())</span>
                         <span class="muted">(matched.as_str())</span>
                         <nav class="acts">
-                            jump(href: "/library?view=songs".to_string(), label: "back")
                             if song.omm_id.is_some() {
                                 <form method="post" action="/library/clear">
                                     <input type="hidden" name="id" value=(song.id.as_str())>

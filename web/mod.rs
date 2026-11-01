@@ -9,6 +9,7 @@ pub mod media;
 mod nav;
 mod notice;
 mod page;
+mod playlists;
 
 use std::time::Duration;
 
@@ -101,6 +102,7 @@ pub fn service(st: AppState) -> TowerService {
     let builder = page::routes(builder);
     let builder = libraries::routes(builder);
     let builder = library::routes(builder);
+    let builder = playlists::routes(builder);
     let builder = builder
         .cookies()
         .sessions(

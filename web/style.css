@@ -1315,6 +1315,109 @@ form.row {
   flex-direction: row;
 }
 
+.row .c-pick {
+  flex: none;
+  width: 1rlh;
+}
+
+.pick {
+  display: grid;
+  place-items: center;
+  width: 1rlh;
+  height: 1rlh;
+  padding: 0;
+  background: var(--tint);
+  color: var(--bg);
+  overflow: hidden;
+
+  &:hover {
+    background: var(--tint-hover);
+  }
+
+  &[aria-pressed="true"] {
+    background: var(--accent);
+  }
+}
+
+.adding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px var(--gap);
+
+  button {
+    min-width: calc(14 * var(--ch));
+  }
+}
+
+.album-head .text form.rename {
+  width: min(100%, calc(var(--w, 48) * var(--ch)));
+}
+
+.rename {
+  .name {
+    cursor: text;
+  }
+
+  .edit {
+    display: none;
+    align-items: center;
+    gap: 2px var(--gap);
+
+    input {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  &[data-open] {
+    .name {
+      display: none;
+    }
+
+    .edit {
+      display: flex;
+    }
+  }
+}
+
+.row[data-slot]:not([data-slot=""]) {
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+
+  * {
+    -webkit-touch-callout: none;
+  }
+
+  img {
+    -webkit-user-drag: none;
+  }
+}
+
+.row.sliding {
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.row.lifted {
+  visibility: hidden;
+}
+
+.row.floating {
+  background: var(--surface);
+  box-shadow: 0 0.5rlh 1.5rlh rgb(0 0 0 / 0.45);
+  cursor: grabbing;
+}
+
+html.reordering,
+html.reordering * {
+  cursor: grabbing !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 .row .c-act {
   flex: none;
   width: calc(6 * var(--ch));
@@ -1324,6 +1427,17 @@ form.row {
 
 .album-head .text form {
   width: auto;
+}
+
+.create {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px var(--gap);
+
+  .search {
+    flex: 1;
+  }
 }
 
 .rows.virtual > div[aria-hidden] {

@@ -9,27 +9,27 @@ use crate::error::ApiError;
 use crate::ids;
 use crate::util::iso;
 
-struct PlaylistRow {
-    id: String,
-    name: String,
-    comment: String,
-    public: bool,
-    owner_id: String,
-    owner: String,
+pub struct PlaylistRow {
+    pub id: String,
+    pub name: String,
+    pub comment: String,
+    pub public: bool,
+    pub owner_id: String,
+    pub owner: String,
     created_at: i64,
     changed_at: i64,
-    song_count: i64,
-    duration_ms: i64,
+    pub song_count: i64,
+    pub duration_ms: i64,
 }
 
-const SELECT: &str =
+pub const SELECT: &str =
     "SELECT p.id, p.name, p.comment, p.public, p.owner_id, u.name, p.created_at, p.changed_at,
     (SELECT COUNT(*) FROM playlist_songs ps WHERE ps.playlist_id = p.id),
     (SELECT COALESCE(SUM(s.duration_ms), 0) FROM playlist_songs ps JOIN songs s ON s.id = ps.song_id
         WHERE ps.playlist_id = p.id)
     FROM playlists p JOIN users u ON u.id = p.owner_id";
 
-fn map(r: &rusqlite::Row) -> rusqlite::Result<PlaylistRow> {
+pub fn map(r: &rusqlite::Row) -> rusqlite::Result<PlaylistRow> {
     Ok(PlaylistRow {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -62,7 +62,7 @@ fn row_json(p: &PlaylistRow) -> Value {
     v
 }
 
-fn fetch(conn: &Connection, id: &str, user: &User) -> Result<PlaylistRow, ApiError> {
+pub fn fetch(conn: &Connection, id: &str, user: &User) -> Result<PlaylistRow, ApiError> {
     let row = conn
         .query_row(&format!("{SELECT} WHERE p.id = ?1"), [id], map)
         .optional()?
@@ -73,7 +73,7 @@ fn fetch(conn: &Connection, id: &str, user: &User) -> Result<PlaylistRow, ApiErr
     Ok(row)
 }
 
-fn owned(conn: &Connection, id: &str, user: &User) -> Result<PlaylistRow, ApiError> {
+pub fn owned(conn: &Connection, id: &str, user: &User) -> Result<PlaylistRow, ApiError> {
     let row = fetch(conn, id, user)?;
     if row.owner_id != user.id && !user.admin {
         return Err(ApiError::forbidden(
@@ -83,13 +83,13 @@ fn owned(conn: &Connection, id: &str, user: &User) -> Result<PlaylistRow, ApiErr
     Ok(row)
 }
 
-fn song_ids(conn: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
+pub fn song_ids(conn: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn
         .prepare("SELECT song_id FROM playlist_songs WHERE playlist_id = ?1 ORDER BY position")?;
     stmt.query_map([id], |r| r.get(0))?.collect()
 }
 
-fn write_songs(conn: &Connection, id: &str, songs: &[String]) -> rusqlite::Result<()> {
+pub fn write_songs(conn: &Connection, id: &str, songs: &[String]) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM playlist_songs WHERE playlist_id = ?1", [id])?;
     for (i, s) in songs.iter().enumerate() {
         conn.execute(

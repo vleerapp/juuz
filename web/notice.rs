@@ -34,10 +34,12 @@ pub enum Notice {
     CatalogueMatched,
     CatalogueCleared,
     CatalogueOff,
+    PlaylistSaved,
+    PlaylistDeleted,
 }
 
 impl Notice {
-    const EACH: [Notice; 30] = [
+    const EACH: [Notice; 32] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -68,6 +70,8 @@ impl Notice {
         Notice::CatalogueMatched,
         Notice::CatalogueCleared,
         Notice::CatalogueOff,
+        Notice::PlaylistSaved,
+        Notice::PlaylistDeleted,
     ];
 
     pub fn code(self) -> &'static str {
@@ -102,6 +106,8 @@ impl Notice {
             Notice::CatalogueMatched => "catalogue-matched",
             Notice::CatalogueCleared => "catalogue-cleared",
             Notice::CatalogueOff => "catalogue-off",
+            Notice::PlaylistSaved => "playlist-saved",
+            Notice::PlaylistDeleted => "playlist-deleted",
         }
     }
 
@@ -141,6 +147,8 @@ impl Notice {
             Notice::CatalogueMatched => "metadata match saved",
             Notice::CatalogueCleared => "metadata match cleared",
             Notice::CatalogueOff => "metadata lookup is disabled on this server",
+            Notice::PlaylistSaved => "playlist saved",
+            Notice::PlaylistDeleted => "playlist deleted",
         }
     }
 
