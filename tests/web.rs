@@ -1454,3 +1454,460 @@ async fn artist_pages_link_albums_and_songs() {
     assert!(songs.contains(&format!("artist={artist}")), "{songs}");
     assert!(songs.contains(&format!("album={album}")), "{songs}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn playlists_view_lists_opens_and_edits() {
+    let h = Harness::new();
+    for (n, title) in [(1, "One"), (2, "Two")] {
+        make_track(
+            h.music.path(),
+            &format!("Artist/Album/0{n} - {title}.wav"),
+            80 + n,
+            &Tags {
+                title: Some(title),
+                artist: Some("Artist"),
+                album: Some("Album"),
+                track: Some(n),
+                ..Default::default()
+            },
+        );
+    }
+    h.scan().await;
+    let found = h.ok("search3", "query=artist").await["searchResult3"].clone();
+    let ids: Vec<String> = found["song"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+    h.ok("createUser", "username=bob&password=bobpw").await;
+    h.ok(
+        "createUser",
+        "username=ann&password=annpw&playlistRole=false",
+    )
+    .await;
+    let bob = login(&h, "bob", "bobpw").await;
+    let ann = login(&h, "ann", "annpw").await;
+
+    let empty = page(&h, "/library?view=playlists", Some(&bob)).await.text();
+    assert!(empty.contains("/library/playlists/create"), "{empty}");
+    let made = post(
+        &h,
+        "/library/playlists/create",
+        Some(&bob),
+        "name=Road%20trip",
+    )
+    .await;
+    let target = location(&made);
+    assert!(
+        target.starts_with("/library?view=playlists&playlist=")
+            && target.ends_with("&n=playlist-saved"),
+        "{target}"
+    );
+    let id = target
+        .split("playlist=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_string();
+    let bad = post(&h, "/library/playlists/create", Some(&bob), "name=%20%20").await;
+    assert_eq!(location(&bad), "/library?view=playlists&n=invalid");
+
+    let mut body = format!("playlistId={id}");
+    for s in &ids {
+        body.push_str(&format!("&songIdToAdd={s}"));
+    }
+    h.ok("updatePlaylist", &body).await;
+
+    let listing = page(&h, "/library?view=playlists", Some(&bob)).await.text();
+    assert!(listing.contains("Road trip"), "{listing}");
+    assert!(
+        listing.contains(&format!("data-play-list=\"{id}\"")),
+        "{listing}"
+    );
+    let open = page(
+        &h,
+        &format!("/library?view=playlists&playlist={id}"),
+        Some(&bob),
+    )
+    .await
+    .text();
+    assert!(open.contains("data-queue"), "{open}");
+    assert!(open.contains("/library/playlists/rename"), "{open}");
+    assert!(
+        open.contains(&format!("data-play=\"{}\"", ids[0])),
+        "{open}"
+    );
+    let filtered = page(
+        &h,
+        &format!("/library?view=playlists&playlist={id}&q=two"),
+        Some(&bob),
+    )
+    .await
+    .text();
+    assert!(filtered.contains("Two"), "{filtered}");
+    assert!(!filtered.contains(">One<"), "{filtered}");
+
+    let theirs = page(
+        &h,
+        &format!("/library?view=playlists&playlist={id}"),
+        Some(&ann),
+    )
+    .await
+    .text();
+    assert!(!theirs.contains("Road trip"), "{theirs}");
+    let denied = post(&h, "/library/playlists/create", Some(&ann), "name=nope").await;
+    assert_eq!(location(&denied), "/?n=forbidden");
+    let stolen = post(
+        &h,
+        "/library/playlists/delete",
+        Some(&login(&h, "ann", "annpw").await),
+        &format!("id={id}"),
+    )
+    .await;
+    assert_eq!(location(&stolen), "/?n=forbidden");
+
+    let renamed = post(
+        &h,
+        "/library/playlists/rename",
+        Some(&bob),
+        &format!("id={id}&name=Long%20drive"),
+    )
+    .await;
+    assert!(location(&renamed).ends_with("&n=playlist-saved"));
+    let stale = post(
+        &h,
+        "/library/playlists/remove",
+        Some(&bob),
+        &format!("id={id}&song={}&index=5", ids[0]),
+    )
+    .await;
+    assert!(location(&stale).ends_with("&n=invalid"));
+    let removed = post(
+        &h,
+        "/library/playlists/remove",
+        Some(&bob),
+        &format!("id={id}&song={}&index=0", ids[0]),
+    )
+    .await;
+    assert!(location(&removed).ends_with("&n=playlist-saved"));
+    let got = h.ok("getPlaylist", &format!("id={id}")).await["playlist"].clone();
+    assert_eq!(got["name"], "Long drive");
+    assert_eq!(got["songCount"], 1);
+
+    let gone = post(
+        &h,
+        "/library/playlists/delete",
+        Some(&bob),
+        &format!("id={id}"),
+    )
+    .await;
+    assert_eq!(
+        location(&gone),
+        "/library?view=playlists&n=playlist-deleted"
+    );
+    let after = page(&h, "/library?view=playlists", Some(&bob)).await.text();
+    assert!(!after.contains("Long drive"), "{after}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn songs_can_be_added_to_a_playlist_from_the_web() {
+    let h = Harness::new();
+    make_track(
+        h.music.path(),
+        "Artist/Album/01 - One.wav",
+        81,
+        &Tags {
+            title: Some("One"),
+            artist: Some("Artist"),
+            album: Some("Album"),
+            track: Some(1),
+            ..Default::default()
+        },
+    );
+    h.scan().await;
+    let found = h.ok("search3", "query=one").await["searchResult3"].clone();
+    let song = found["song"][0]["id"].as_str().unwrap().to_string();
+    h.ok("createUser", "username=bob&password=bobpw").await;
+    h.ok("createUser", "username=eve&password=evepw").await;
+    let bob = login(&h, "bob", "bobpw").await;
+    let eve = login(&h, "eve", "evepw").await;
+    let made = post(&h, "/library/playlists/create", Some(&bob), "name=Mix").await;
+    let id = location(&made)
+        .split("playlist=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let open = page(
+        &h,
+        &format!("/library?view=playlists&playlist={id}"),
+        Some(&bob),
+    )
+    .await
+    .text();
+    assert!(open.contains(&format!("view=songs&amp;add={id}")), "{open}");
+    let adding = page(
+        &h,
+        &format!("/library?view=songs&add={id}&q=one"),
+        Some(&bob),
+    )
+    .await
+    .text();
+    assert!(adding.contains("/library/playlists/add"), "{adding}");
+    assert!(adding.contains("adding to"), "{adding}");
+    assert!(adding.contains("data-pick="), "{adding}");
+    let foreign = page(&h, &format!("/library?view=songs&add={id}"), Some(&eve))
+        .await
+        .text();
+    assert!(!foreign.contains("/library/playlists/add"), "{foreign}");
+
+    let added = post(
+        &h,
+        "/library/playlists/add",
+        Some(&bob),
+        &format!("id={id}&songs={song},nope,{song}"),
+    )
+    .await;
+    assert_eq!(
+        location(&added),
+        format!("/library?view=playlists&playlist={id}&n=playlist-saved")
+    );
+    let got = h.ok("getPlaylist", &format!("id={id}")).await["playlist"].clone();
+    assert_eq!(got["songCount"], 1);
+    let denied = post(
+        &h,
+        "/library/playlists/add",
+        Some(&eve),
+        &format!("id={id}&songs={song}"),
+    )
+    .await;
+    assert!(location(&denied).ends_with("&n=invalid"));
+    let got = h.ok("getPlaylist", &format!("id={id}")).await["playlist"].clone();
+    assert_eq!(got["songCount"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn playlist_songs_can_be_reordered() {
+    let h = Harness::new();
+    for (n, title) in [(1, "One"), (2, "Two"), (3, "Three")] {
+        make_track(
+            h.music.path(),
+            &format!("Artist/Album/0{n} - {title}.wav"),
+            80 + n,
+            &Tags {
+                title: Some(title),
+                artist: Some("Artist"),
+                album: Some("Album"),
+                track: Some(n),
+                ..Default::default()
+            },
+        );
+    }
+    h.scan().await;
+    h.ok("createUser", "username=bob&password=bobpw").await;
+    h.ok("createUser", "username=eve&password=evepw").await;
+    let bob = login(&h, "bob", "bobpw").await;
+    let eve = login(&h, "eve", "evepw").await;
+    let made = post(&h, "/library/playlists/create", Some(&bob), "name=Mix").await;
+    let id = location(&made)
+        .split("playlist=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_string();
+    let found = h.ok("search3", "query=artist").await["searchResult3"].clone();
+    let mut body = format!("playlistId={id}");
+    let mut ids = Vec::new();
+    for t in ["One", "Two", "Three"] {
+        let s = found["song"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["title"] == t)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        body.push_str(&format!("&songIdToAdd={s}"));
+        ids.push(s);
+    }
+    h.ok("updatePlaylist", &body).await;
+    let order = |v: serde_json::Value| -> Vec<String> {
+        v["playlist"]["entry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        order(h.ok("getPlaylist", &format!("id={id}")).await),
+        ["One", "Two", "Three"]
+    );
+
+    let open = page(
+        &h,
+        &format!("/library?view=playlists&playlist={id}"),
+        Some(&bob),
+    )
+    .await
+    .text();
+    assert!(open.contains("data-slot=\"0\""), "{open}");
+    assert!(
+        open.contains(&format!("data-song=\"{}\"", ids[0])),
+        "{open}"
+    );
+    assert!(!open.contains("move up"), "{open}");
+
+    let moved = post(
+        &h,
+        "/library/playlists/move",
+        Some(&bob),
+        &format!("id={id}&song={}&index=0&to=2", ids[0]),
+    )
+    .await;
+    assert!(
+        location(&moved).ends_with("&n=playlist-saved"),
+        "{}",
+        location(&moved)
+    );
+    assert_eq!(
+        order(h.ok("getPlaylist", &format!("id={id}")).await),
+        ["Two", "Three", "One"]
+    );
+
+    let up = post(
+        &h,
+        "/library/playlists/move",
+        Some(&bob),
+        &format!("id={id}&song={}&index=2&to=1", ids[0]),
+    )
+    .await;
+    assert!(location(&up).ends_with("&n=playlist-saved"));
+    assert_eq!(
+        order(h.ok("getPlaylist", &format!("id={id}")).await),
+        ["Two", "One", "Three"]
+    );
+
+    for body in [
+        format!("id={id}&song={}&index=0&to=9", ids[1]),
+        format!("id={id}&song={}&index=1&to=0", ids[1]),
+    ] {
+        let r = post(&h, "/library/playlists/move", Some(&bob), &body).await;
+        assert!(location(&r).ends_with("&n=invalid"), "{}", location(&r));
+    }
+    let theirs = post(
+        &h,
+        "/library/playlists/move",
+        Some(&eve),
+        &format!("id={id}&song={}&index=0&to=1", ids[1]),
+    )
+    .await;
+    assert!(location(&theirs).ends_with("&n=invalid"));
+    assert_eq!(
+        order(h.ok("getPlaylist", &format!("id={id}")).await),
+        ["Two", "One", "Three"]
+    );
+    let quiet = post(
+        &h,
+        "/library/playlists/shift",
+        Some(&bob),
+        &format!("id={id}&song={}&index=0&to=1", ids[1]),
+    )
+    .await;
+    assert_eq!(quiet.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        order(h.ok("getPlaylist", &format!("id={id}")).await),
+        ["One", "Two", "Three"]
+    );
+    let stale = post(
+        &h,
+        "/library/playlists/shift",
+        Some(&bob),
+        &format!("id={id}&song={}&index=0&to=1", ids[1]),
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_is_fuzzy_and_spans_title_artist_and_album() {
+    let h = Harness::new();
+    for (n, (title, artist, album)) in [
+        ("Digital Love", "Daft Punk", "Discovery"),
+        ("Bohemian Rhapsody", "Queen", "A Night at the Opera"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        make_track(
+            h.music.path(),
+            &format!("{artist}/{album}/01 - {title}.wav"),
+            90 + n as u32,
+            &Tags {
+                title: Some(title),
+                artist: Some(artist),
+                album: Some(album),
+                track: Some(1),
+                ..Default::default()
+            },
+        );
+    }
+    h.scan().await;
+    let titles = |v: &serde_json::Value| -> Vec<String> {
+        v["searchResult3"]["song"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| s["title"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for q in [
+        "digital daft discovery",
+        "dgtl lv",
+        "DAFT disc",
+        "punk digital",
+    ] {
+        let r = h
+            .ok("search3", &format!("query={}", q.replace(' ', "%20")))
+            .await;
+        assert_eq!(titles(&r), ["Digital Love"], "{q}");
+    }
+    let r = h.ok("search3", "query=queen%20opera").await;
+    assert_eq!(titles(&r), ["Bohemian Rhapsody"]);
+    let r = h.ok("search3", "query=zzzzqq").await;
+    assert!(titles(&r).is_empty());
+
+    let admin = login(&h, USER, PASS).await;
+    let hit = page(&h, "/library?view=songs&q=dgtl%20daft", Some(&admin))
+        .await
+        .text();
+    assert!(
+        hit.contains("Digital Love") && !hit.contains("Bohemian"),
+        "{hit}"
+    );
+    let albums = page(&h, "/library?view=albums&q=daft%20disc", Some(&admin))
+        .await
+        .text();
+    assert!(
+        albums.contains("Discovery") && !albums.contains("Opera"),
+        "{albums}"
+    );
+    let artists = page(&h, "/library?view=artists&q=qeen", Some(&admin))
+        .await
+        .text();
+    assert!(
+        artists.contains("Queen") && !artists.contains("Daft Punk"),
+        "{artists}"
+    );
+}
