@@ -441,7 +441,13 @@
         const next = new DOMParser().parseFromString(await res.text(), "text/html");
         for (const el of document.querySelectorAll("[data-live]")) {
           const fresh = next.querySelector(`[data-live="${el.dataset.live}"]`);
-          if (fresh && fresh.innerHTML !== el.innerHTML) el.innerHTML = fresh.innerHTML;
+          if (!fresh || fresh.innerHTML === el.innerHTML) continue;
+          const active = document.activeElement;
+          const at = active && active !== el && el.contains(active) ? [...el.querySelectorAll("*")].indexOf(active) : -1;
+          const label = at >= 0 ? active.tagName + active.textContent.trim() : "";
+          el.innerHTML = fresh.innerHTML;
+          const again = at >= 0 ? el.querySelectorAll("*")[at] : null;
+          if (again && again.tagName + again.textContent.trim() === label) again.focus({ preventScroll: true });
         }
       } finally {
         busy = false;
