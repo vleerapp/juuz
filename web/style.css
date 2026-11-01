@@ -102,11 +102,11 @@ html {
   nav {
     display: flex;
     flex-wrap: wrap;
+    gap: 2px;
     user-select: none;
 
     a {
       padding-inline: var(--ch);
-      box-shadow: inset 0 0 0 1px var(--bg);
       color: var(--muted);
       text-decoration: none;
 
@@ -284,7 +284,6 @@ input[type="checkbox"] {
   width: 1rlh;
   height: 1rlh;
   background: var(--tint);
-  box-shadow: inset 0 0 0 1px var(--bg);
   cursor: pointer;
   user-select: none;
 
@@ -523,6 +522,7 @@ li {
 .members {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
 summary {
@@ -550,10 +550,6 @@ summary {
     content: "-";
   }
 
-  .member + .member & {
-    box-shadow: inset 0 1px var(--bg);
-  }
-
   small {
     margin-left: auto;
   }
@@ -569,6 +565,7 @@ summary {
 .roles {
   display: grid;
   grid-template-columns: repeat(auto-fill, calc(18 * var(--ch)));
+  gap: 2px;
 }
 
 .caret {
@@ -601,7 +598,7 @@ summary {
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 0 var(--gap);
+    gap: 2px var(--gap);
   }
 
   .segments {
@@ -632,7 +629,7 @@ summary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0 var(--gap);
+  gap: 2px var(--gap);
 
   &:empty {
     display: none;
@@ -683,7 +680,7 @@ summary {
 
   .acts {
     display: flex;
-    gap: 0 var(--gap);
+    gap: 2px var(--gap);
     align-items: center;
     align-self: center;
     font-size: 1em;
@@ -836,6 +833,7 @@ button.icon {
 .field {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
 .select {
@@ -875,9 +873,10 @@ button.icon {
   .options {
     position: absolute;
     z-index: 30;
-    inset: 100% 0 auto 0;
+    inset: calc(100% + 2px) 0 auto 0;
     display: flex;
     flex-direction: column;
+    gap: 2px;
     background: var(--surface);
     box-shadow: inset 0 0 0 1px var(--tint-hover);
   }
@@ -1256,7 +1255,7 @@ body:has(.player:not([hidden])) .screen {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 0 var(--gap);
+      gap: 2px var(--gap);
       margin-top: 1rlh;
     }
   }
