@@ -1358,6 +1358,7 @@ form.row {
 .rename {
   .name {
     cursor: text;
+    width: fit-content;
   }
 
   .edit {
