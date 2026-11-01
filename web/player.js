@@ -700,7 +700,12 @@
         }
       }
       view.push(below);
-      host.replaceChildren(...view);
+      const want = new Set(view);
+      for (const child of [...host.children]) if (!want.has(child)) child.remove();
+      view.forEach((el, i) => {
+        const at = host.children[i];
+        if (at !== el) host.insertBefore(el, at || null);
+      });
       const ahead = Math.min(total - 1, end + chunk);
       for (let i = Math.max(0, start - chunk / 2); i <= ahead; i += chunk) {
         if (!rows[Math.floor(i / chunk) * chunk]) load(Math.floor(i / chunk) * chunk);
