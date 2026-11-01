@@ -204,14 +204,6 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool, ApiError> {
     if id == DEFAULT_ID {
         return Err(ApiError::forbidden("the default library cannot be removed"));
     }
-    let ids: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT id FROM songs WHERE library_id = ?1")?;
-        stmt.query_map([id], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?
-    };
-    for song in &ids {
-        crate::scanner::index::fts_del(conn, song)?;
-    }
     conn.execute("DELETE FROM songs WHERE library_id = ?1", [id])?;
     conn.execute("DELETE FROM albums WHERE library_id = ?1", [id])?;
     conn.execute(

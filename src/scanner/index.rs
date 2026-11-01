@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, named_params, params};
-use xxhash_rust::xxh3::{xxh3_64, xxh3_128};
+use xxhash_rust::xxh3::xxh3_128;
 
 use super::grouping::{self, UNKNOWN_ARTIST, album_key};
 use super::tags::TrackInfo;
@@ -22,25 +22,6 @@ pub struct Outcome {
     pub albums: HashSet<String>,
     pub album_moves: Vec<(String, String)>,
     pub skipped: usize,
-}
-
-pub fn fts_rowid(id: &str) -> i64 {
-    (xxh3_64(id.as_bytes()) >> 1) as i64
-}
-
-pub fn fts_put(conn: &Connection, kind: &str, id: &str, text: &str) -> rusqlite::Result<()> {
-    let rowid = fts_rowid(id);
-    conn.execute("DELETE FROM search_fts WHERE rowid = ?1", [rowid])?;
-    conn.execute(
-        "INSERT OR IGNORE INTO search_fts(rowid, kind, id, text) VALUES (?1, ?2, ?3, ?4)",
-        params![rowid, kind, id, text],
-    )?;
-    Ok(())
-}
-
-pub fn fts_del(conn: &Connection, id: &str) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM search_fts WHERE rowid = ?1", [fts_rowid(id)])?;
-    Ok(())
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
@@ -64,13 +45,10 @@ pub fn rel_dir(root: &Path, file: &Path) -> String {
 
 fn upsert_artist(conn: &Connection, name: &str) -> rusqlite::Result<String> {
     let id = ids::artist(name);
-    let inserted = conn.execute(
+    conn.execute(
         "INSERT OR IGNORE INTO artists(id, name, created_at) VALUES (?1, ?2, ?3)",
         params![id, name, now()],
     )?;
-    if inserted > 0 {
-        fts_put(conn, "artist", &id, name)?;
-    }
     Ok(id)
 }
 
@@ -141,7 +119,6 @@ pub fn upsert_tracks(
         {
             repoint(&tx, &old_id, &song_id)?;
             tx.execute("DELETE FROM songs WHERE id = ?1", [&old_id])?;
-            fts_del(&tx, &old_id)?;
             if old_album != album_id {
                 out.album_moves.push((old_album.clone(), album_id.clone()));
             }
@@ -165,7 +142,6 @@ pub fn upsert_tracks(
                 }
                 repoint(&tx, &old_id, &song_id)?;
                 tx.execute("DELETE FROM songs WHERE id = ?1", [&old_id])?;
-                fts_del(&tx, &old_id)?;
                 if old_album != album_id {
                     out.album_moves.push((old_album.clone(), album_id.clone()));
                 }
@@ -311,8 +287,6 @@ pub fn upsert_tracks(
             )?;
         }
 
-        let fts_text = format!("{} {} {}", t.title, display, key.title);
-        fts_put(&tx, "song", &song_id, &fts_text)?;
         out.song_ids.push(song_id);
     }
 
@@ -382,7 +356,6 @@ pub fn finalize_albums(
         )?;
         if song_count == 0 {
             tx.execute("DELETE FROM albums WHERE id = ?1", [album_id])?;
-            fts_del(&tx, album_id)?;
             continue;
         }
 
@@ -462,20 +435,6 @@ pub fn finalize_albums(
              WHERE id = ?1",
             params![album_id, cover, cover_path, local],
         )?;
-
-        let (title, artists): (String, Option<String>) = tx.query_row(
-            "SELECT al.title, (SELECT GROUP_CONCAT(a.name, ' ') FROM album_artists aa
-                 JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = al.id)
-             FROM albums al WHERE al.id = ?1",
-            [album_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        fts_put(
-            &tx,
-            "album",
-            album_id,
-            &format!("{} {}", title, artists.unwrap_or_default()),
-        )?;
     }
 
     tx.commit()?;
@@ -498,7 +457,6 @@ pub fn prune_entities(conn: &mut Connection) -> Result<(), ApiError> {
             .collect::<rusqlite::Result<_>>()?
     };
     for id in &orphan_albums {
-        fts_del(&tx, id)?;
         tx.execute("DELETE FROM albums WHERE id = ?1", [id])?;
     }
 
@@ -512,7 +470,6 @@ pub fn prune_entities(conn: &mut Connection) -> Result<(), ApiError> {
             .collect::<rusqlite::Result<_>>()?
     };
     for id in &orphan_artists {
-        fts_del(&tx, id)?;
         tx.execute("DELETE FROM artists WHERE id = ?1", [id])?;
     }
 
@@ -587,7 +544,6 @@ pub fn prune_stale(
     }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for id in &stale {
-        fts_del(&tx, id)?;
         tx.execute("DELETE FROM songs WHERE id = ?1", [id])?;
     }
     tx.commit()?;

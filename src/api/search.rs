@@ -6,15 +6,7 @@ use super::model::*;
 use super::{ApiResult, Ctx, ok};
 use crate::db::libraries::{artist_visible, visible};
 use crate::error::ApiError;
-
-fn fts_query(q: &str) -> Option<String> {
-    let tokens: Vec<String> = q
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(|t| format!("\"{t}\"*"))
-        .collect();
-    (!tokens.is_empty()).then(|| tokens.join(" "))
-}
+use crate::search::{self, Mode, Query};
 
 struct Page {
     count: i64,
@@ -26,13 +18,25 @@ fn ids_for(
     conn: &Connection,
     uid: &str,
     kind: &str,
-    query: &Option<String>,
+    query: &Option<Query>,
     page: &Page,
 ) -> Result<Vec<String>, ApiError> {
     if page.count <= 0 {
         return Ok(Vec::new());
     }
-    let mut args: Vec<Sql> = vec![sv(uid)];
+    if let Some(q) = query {
+        let ranked = match kind {
+            "artist" => q.rank(Mode::Plain, &search::artist_docs(conn, uid, page.folder)?),
+            "album" => q.rank(Mode::Plain, &search::album_docs(conn, uid, page.folder)?),
+            _ => q.rank(Mode::Song, &search::song_docs(conn, uid, page.folder, "")?),
+        };
+        return Ok(ranked
+            .into_iter()
+            .skip(page.offset as usize)
+            .take(page.count as usize)
+            .collect());
+    }
+    let args: Vec<Sql> = vec![sv(uid)];
     let (song_folder, album_folder, artist_folder) = match page.folder {
         Some(f) => (
             format!(" AND library_id = {f}"),
@@ -44,43 +48,20 @@ fn ids_for(
         ),
         None => Default::default(),
     };
-    let sql = match (query, kind) {
-        (Some(q), _) => {
-            args.push(sv(q));
-            args.push(sv(kind));
-            let allowed = match kind {
-                "artist" => format!(
-                    "f.id IN (SELECT ar.id FROM artists ar WHERE {}{artist_folder})",
-                    artist_visible!("ar.id")
-                ),
-                "album" => format!(
-                    "f.id IN (SELECT id FROM albums WHERE {}{album_folder})",
-                    visible!("library_id")
-                ),
-                _ => format!(
-                    "f.id IN (SELECT id FROM songs WHERE {}{song_folder})",
-                    visible!("library_id")
-                ),
-            };
-            format!(
-                "SELECT f.id FROM search_fts f WHERE search_fts MATCH ?2 AND f.kind = ?3 AND {allowed}
-                 ORDER BY f.rank LIMIT {} OFFSET {}",
-                page.count, page.offset
-            )
-        }
-        (None, "artist") => format!(
+    let sql = match kind {
+        "artist" => format!(
             "SELECT ar.id FROM artists ar WHERE {}{artist_folder} ORDER BY ar.name COLLATE NOCASE LIMIT {} OFFSET {}",
             artist_visible!("ar.id"),
             page.count,
             page.offset
         ),
-        (None, "album") => format!(
+        "album" => format!(
             "SELECT id FROM albums WHERE {}{album_folder} ORDER BY title COLLATE NOCASE LIMIT {} OFFSET {}",
             visible!("library_id"),
             page.count,
             page.offset
         ),
-        (None, _) => format!(
+        _ => format!(
             "SELECT id FROM songs WHERE {}{song_folder} ORDER BY title COLLATE NOCASE LIMIT {} OFFSET {}",
             visible!("library_id"),
             page.count,
@@ -109,7 +90,7 @@ fn page_of(ctx: &Ctx, count_key: &str, offset_key: &str) -> Result<Page, ApiErro
 }
 
 async fn run_search(ctx: &Ctx) -> Result<Results, ApiError> {
-    let query = fts_query(ctx.params.get("query").unwrap_or(""));
+    let query = Query::parse(ctx.params.get("query").unwrap_or(""));
     let artist_page = page_of(ctx, "artistCount", "artistOffset")?;
     let album_page = page_of(ctx, "albumCount", "albumOffset")?;
     let song_page = page_of(ctx, "songCount", "songOffset")?;
@@ -183,7 +164,7 @@ pub async fn legacy_search(ctx: Ctx) -> ApiResult {
     let count = ctx.params.int_or("count", 20)?.clamp(0, 500);
     let offset = ctx.params.int_or("offset", 0)?.max(0);
     let uid = ctx.user().id.clone();
-    let fts = fts_query(&query);
+    let fts = Query::parse(&query);
     let folder = super::browse::folder_filter(&ctx)?;
     let (total, songs) = ctx
         .st

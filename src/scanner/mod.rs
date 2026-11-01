@@ -346,7 +346,6 @@ impl Scanner {
         }
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for id in &ids {
-            index::fts_del(&tx, id)?;
             tx.execute("DELETE FROM songs WHERE id = ?1", [id])?;
         }
         tx.commit()?;

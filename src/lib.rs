@@ -14,6 +14,7 @@ pub mod podcast;
 pub mod ratelimit;
 pub mod response;
 pub mod scanner;
+pub mod search;
 pub mod state;
 pub mod transcode;
 pub mod upload;
