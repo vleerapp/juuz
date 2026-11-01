@@ -41,7 +41,7 @@ pub struct Status {
 #[derive(Debug, Default)]
 pub struct Summary {
     pub scanned: u64,
-    pub pruned: usize,
+    pub missing: usize,
     pub failed: usize,
 }
 
@@ -127,9 +127,9 @@ impl Scanner {
         let scanner = self.clone();
         tokio::task::spawn_blocking(move || match scanner.scan_library_blocking(library, full) {
             Ok(Some(s)) => tracing::info!(
-                "scan finished: {} scanned, {} pruned, {} failed",
+                "scan finished: {} scanned, {} missing, {} failed",
                 s.scanned,
-                s.pruned,
+                s.missing,
                 s.failed
             ),
             Ok(None) => {}
@@ -224,15 +224,6 @@ impl Scanner {
 
         let files = walk(&root);
         let known = index::known_files(conn, library.id)?;
-        if files.is_empty() && !known.is_empty() {
-            tracing::warn!(
-                "no audio files found in {} but {} are indexed; skipping to avoid mass deletion",
-                root.display(),
-                known.len()
-            );
-            return Ok(());
-        }
-
         let mut unchanged = Vec::new();
         let mut changed = Vec::new();
         for f in &files {
@@ -273,7 +264,14 @@ impl Scanner {
             self.live.notify();
         }
         index::finalize_albums(conn, &albums, &moves)?;
-        summary.pruned += index::prune_stale(conn, library.id, generation, scan_start)?;
+        let missing = index::count_stale(conn, library.id, generation, scan_start)?;
+        if missing > 0 {
+            tracing::warn!(
+                "{missing} song(s) in library '{}' are missing from disk, keeping them",
+                library.name
+            );
+        }
+        summary.missing += missing;
         Ok(())
     }
 
@@ -355,5 +353,41 @@ impl Scanner {
             index::prune_user_rows(&mut conn)?;
         }
         Ok(ids.len())
+    }
+
+    pub fn remove_missing(&self, library_id: i64) -> Result<Option<usize>, ApiError> {
+        let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.db.conn()?;
+        let Some(library) = libraries::list(&conn)?
+            .into_iter()
+            .find(|l| l.id == library_id)
+        else {
+            return Ok(None);
+        };
+        if !library.online() {
+            return Ok(None);
+        }
+        let missing: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id, path FROM songs WHERE library_id = ?1")?;
+            stmt.query_map([library_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(_, p)| matches!(Path::new(p).try_exists(), Ok(false)))
+            .map(|(id, _)| id)
+            .collect()
+        };
+        if missing.is_empty() {
+            return Ok(Some(0));
+        }
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for id in &missing {
+            tx.execute("DELETE FROM songs WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        index::prune_orphans(&mut conn)?;
+        self.live.notify();
+        Ok(Some(missing.len()))
     }
 }

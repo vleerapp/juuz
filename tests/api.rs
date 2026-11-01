@@ -298,7 +298,7 @@ async fn scan_groups_albums_and_serves_media() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn removed_files_are_pruned_and_orphans_cleaned() {
+async fn missing_files_are_kept_in_library() {
     let h = Harness::new();
     let root = h.music.path();
     let p = make_track(
@@ -308,13 +308,6 @@ async fn removed_files_are_pruned_and_orphans_cleaned() {
         &tags("Song", "Solo", "Only", 1),
     );
     h.scan().await;
-    assert_eq!(
-        h.ok("getArtists", "").await["artists"]["index"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
     std::fs::remove_file(p).unwrap();
     make_track(
         root,
@@ -324,14 +317,11 @@ async fn removed_files_are_pruned_and_orphans_cleaned() {
     );
     h.scan().await;
     let albums = h.ok("getAlbumList2", "type=newest&size=10").await;
-    assert_eq!(albums["albumList2"]["album"].as_array().unwrap().len(), 1);
-    assert_eq!(albums["albumList2"]["album"][0]["name"], "Disc");
+    assert_eq!(albums["albumList2"]["album"].as_array().unwrap().len(), 2);
     let found = h.ok("search3", "query=solo").await;
-    assert!(
-        found["searchResult3"]["artist"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        found["searchResult3"]["artist"].as_array().unwrap().len(),
+        1
     );
 }
 

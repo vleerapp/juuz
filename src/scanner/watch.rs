@@ -61,11 +61,7 @@ pub fn process_paths(scanner: &Scanner, paths: HashSet<PathBuf>) {
     }
     for path in gone {
         if is_audio(&path) || path.extension().is_none() {
-            match scanner.remove_path(&path, false) {
-                Ok(0) => {}
-                Ok(n) => tracing::info!("removed {n} song(s) under {}", path.display()),
-                Err(e) => tracing::warn!("removing {}: {e}", path.display()),
-            }
+            tracing::warn!("{} removed from disk, keeping in library", path.display());
         }
     }
 }

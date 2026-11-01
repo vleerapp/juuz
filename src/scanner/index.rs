@@ -526,29 +526,18 @@ pub fn repair_albums(conn: &mut Connection) -> Result<usize, ApiError> {
     Ok(incomplete.len())
 }
 
-pub fn prune_stale(
-    conn: &mut Connection,
+pub fn count_stale(
+    conn: &Connection,
     library_id: i64,
     generation: i64,
     scan_start: i64,
 ) -> Result<usize, ApiError> {
-    let stale: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM songs WHERE library_id = ?3 AND seen_gen < ?1 AND indexed_at < ?2",
-        )?;
-        stmt.query_map(params![generation, scan_start, library_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?
-    };
-    if stale.is_empty() {
-        return Ok(0);
-    }
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    for id in &stale {
-        tx.execute("DELETE FROM songs WHERE id = ?1", [id])?;
-    }
-    tx.commit()?;
-    prune_orphans(conn)?;
-    Ok(stale.len())
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM songs WHERE library_id = ?3 AND seen_gen < ?1 AND indexed_at < ?2",
+        params![generation, scan_start, library_id],
+        |r| r.get(0),
+    )?;
+    Ok(n as usize)
 }
 
 pub fn known_files(
