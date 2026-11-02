@@ -96,6 +96,19 @@ fn open_connection(path: &Path, roots: &Arc<RwLock<Vec<PathBuf>>>) -> Result<Con
     Ok(conn)
 }
 
+fn restrict_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = path.as_os_str().to_owned();
+            name.push(suffix);
+            let _ =
+                std::fs::set_permissions(Path::new(&name), std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
 fn run_migrations(conn: &mut Connection) -> Result<()> {
     let mut files: Vec<(String, String)> = MigrationFiles::iter()
         .filter_map(|name| {
@@ -130,6 +143,7 @@ impl Db {
     pub fn open(path: &Path, music_dir: PathBuf) -> Result<Db> {
         let roots = Arc::new(RwLock::new(Vec::new()));
         let mut first = open_connection(path, &roots).context("opening database")?;
+        restrict_permissions(path);
         run_migrations(&mut first).context("running migrations")?;
         libraries::adopt_default(&first, &music_dir).context("registering the music dir")?;
         *roots.write().unwrap_or_else(|e| e.into_inner()) = libraries::roots(&first)?;
