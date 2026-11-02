@@ -15,7 +15,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 
 - **[Song upload](#song-upload)**: apps can save downloaded music straight to the server instead of the device, with covers, lyrics and tag fixing included
 - OpenSubsonic API 1.16.1, JSON and XML, tested with Feishin and Arpeggi
-- Every login style works for every user: password, token, API key
+- Every login style works for every user: password, token (can be switched off), API key
 - Song and artist matching through [OpenMusicMetadata](https://docs.vleer.app) exposed as `ommId`, missing years, genres and artwork filled in without touching the files
 - Songs identified by audio, so renaming or moving files keeps stars, playlists and history
 - Last.fm scrobbling and now playing, linked per user
@@ -23,7 +23,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 - Albums and compilations grouped correctly without an album artist tag
 - Live SQLite library that watches the music folders
 - Opus, MP3 and AAC transcoding (`format=opus`, `mp3`, `aac`) in pure Rust, no ffmpeg
-- Podcasts, shares, internet radio, play queue, bookmarks
+- Shares, internet radio, play queue, bookmarks
 - Jukebox: the server plays to a DLNA speaker and any `jukeboxControl` app (Feishin) acts as the remote
 - **[Web UI](#web-ui)**: a keyboard-driven terminal-style interface for stats, account settings and user management
 
@@ -41,7 +41,8 @@ services:
     environment:
       JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password # first start only, random and logged if unset
       JUUZ_PUBLIC_URL: "https://juuz.example.com" # base url for share links, default from request
-      JUUZ_TRUST_PROXY: true # behind a reverse proxy, use X-Forwarded-For as client ip (default false)
+      JUUZ_TRUST_PROXY: false # set true only behind a reverse proxy that is the sole way to reach the port, then X-Forwarded-For is used as the client ip
+      JUUZ_TOKEN_AUTH: true # false turns off md5 token auth (t+s) and deletes the stored password secrets, apps must use an api key or a plain password
       JUUZ_RATE_LIMIT: 1800 # requests per minute per ip, 0 turns it off
       JUUZ_OMM: "true" # false stops sending track names to OpenMusicMetadata
       JUUZ_LASTFM_API_KEY: "" # scrobbling is off without it
@@ -49,7 +50,7 @@ services:
     volumes:
       - data:/data
       - /path/to/your/music:/music # first library
-      - /mnt/family-nas/music:/libraries/family # more libraries go outside /music, add the path on the server page
+      - /mnt/family-nas/music:/libraries/family # more libraries go outside /music, add the path on the server page. admins can add any folder, other users with the library role only folders under /libraries
 
 volumes:
   data:

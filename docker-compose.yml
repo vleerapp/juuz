@@ -5,15 +5,18 @@ services:
     ports:
       - "4533:4533"
     environment:
-      JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password
-      JUUZ_OMM: "true"
-      JUUZ_LASTFM_API_KEY: ""
+      JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password # first start only, random and logged if unset
+      JUUZ_PUBLIC_URL: "https://juuz.example.com" # base url for share links, default from request
+      JUUZ_TRUST_PROXY: false # set true only behind a reverse proxy that is the sole way to reach the port, then X-Forwarded-For is used as the client ip
+      JUUZ_TOKEN_AUTH: true # false turns off md5 token auth (t+s) and deletes the stored password secrets, apps must use an api key or a plain password
+      JUUZ_RATE_LIMIT: 1800 # requests per minute per ip, 0 turns it off
+      JUUZ_OMM: "true" # false stops sending track names to OpenMusicMetadata
+      JUUZ_LASTFM_API_KEY: "" # scrobbling is off without it
       JUUZ_LASTFM_SECRET: ""
-      JUUZ_PUBLIC_URL: "https://juuz.example.com"
-      JUUZ_TRUST_PROXY: true
     volumes:
       - data:/data
-      - /path/to/your/music:/music
+      - /path/to/your/music:/music # first library
+      - /mnt/family-nas/music:/libraries/family # more libraries go outside /music, add the path on the server page. admins can add any folder, other users with the library role only folders under /libraries
 
 volumes:
   data:
