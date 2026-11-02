@@ -127,9 +127,78 @@ impl Harness {
     }
 
     pub async fn call(&self, endpoint: &str, query: &str) -> Value {
+        if matches!(
+            endpoint,
+            "createUser" | "updateUser" | "deleteUser" | "changePassword"
+        ) {
+            return self.manage_user(endpoint, query).await;
+        }
         self.get(&format!("/rest/{endpoint}?{}&{query}", self.auth()))
             .await
             .json()
+    }
+
+    async fn manage_user(&self, endpoint: &str, query: &str) -> Value {
+        use juuz::db::users::{self, RoleUpdate};
+        let p = juuz::params::Params::parse(query);
+        let st = &self.server.state;
+        let name = p.get("username").unwrap_or_default().to_string();
+        let roles = RoleUpdate {
+            admin: p.bool("adminRole"),
+            settings: p.bool("settingsRole"),
+            stream: p.bool("streamRole"),
+            download: p.bool("downloadRole"),
+            upload: p.bool("uploadRole"),
+            playlist: p.bool("playlistRole"),
+            cover_art: p.bool("coverArtRole"),
+            comment: p.bool("commentRole"),
+            share: p.bool("shareRole"),
+            jukebox: p.bool("jukeboxRole"),
+            scan: p.bool("juuzScanRole"),
+            server: p.bool("juuzServerRole"),
+            radio: p.bool("juuzRadioRole"),
+            delete: p.bool("juuzDeleteRole"),
+            library: p.bool("juuzLibraryRole"),
+            catalogue: p.bool("juuzCatalogueRole"),
+            keys: p.bool("juuzKeysRole"),
+            scrobbling: p.bool("scrobblingEnabled"),
+            max_bit_rate: p.get("maxBitRate").and_then(|v| v.parse().ok()),
+            email: p.get("email").map(str::to_string),
+        };
+        let credentials = match p.get("password") {
+            Some(pw) => Some(juuz::auth::credentials(&st.crypto, pw).await.unwrap()),
+            None => None,
+        };
+        let endpoint = endpoint.to_string();
+        let result = st
+            .db
+            .run(move |c| {
+                match endpoint.as_str() {
+                    "createUser" => {
+                        let (hash, sealed) = credentials.unwrap();
+                        let id = users::create(c, &name, &hash, sealed.as_deref(), false)?;
+                        users::update_roles(c, &id, &roles)?;
+                    }
+                    "deleteUser" => {
+                        let user = users::by_name(c, &name)?.unwrap();
+                        users::delete(c, &user.id)?;
+                    }
+                    _ => {
+                        let user = users::by_name(c, &name)?.unwrap();
+                        users::update_roles(c, &user.id, &roles)?;
+                        if let Some((hash, sealed)) = credentials {
+                            users::set_password(c, &user.id, &hash, sealed.as_deref())?;
+                            users::delete_sessions(c, &user.id)?;
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        match result {
+            Ok(()) => serde_json::json!({"status": "ok"}),
+            Err(e) => serde_json::json!({"status": "failed", "error": {"code": e.code}}),
+        }
     }
 
     pub async fn ok(&self, endpoint: &str, query: &str) -> Value {

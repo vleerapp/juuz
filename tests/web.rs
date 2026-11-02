@@ -795,17 +795,19 @@ async fn libraries_page_is_permissioned_and_manages_libraries() {
 
     let extra = tempfile::tempdir().unwrap();
     let body = format!("name=Family&path={}&writable=on", extra.path().display());
-    let made = post(&h, "/server/libraries/create", Some(&lee), &body).await;
+    let outside = post(&h, "/server/libraries/create", Some(&lee), &body).await;
+    assert_eq!(location(&outside), "/server?n=library-path");
+    let made = post(&h, "/server/libraries/create", Some(&admin), &body).await;
     assert_eq!(location(&made), "/server?n=library-added");
-    let again = post(&h, "/server/libraries/create", Some(&lee), &body).await;
+    let again = post(&h, "/server/libraries/create", Some(&admin), &body).await;
     assert_eq!(location(&again), "/server?n=library-exists");
     let nested = format!("name=Nested&path={}", h.music.path().display());
-    let nested = post(&h, "/server/libraries/create", Some(&lee), &nested).await;
+    let nested = post(&h, "/server/libraries/create", Some(&admin), &nested).await;
     assert_eq!(location(&nested), "/server?n=library-overlap");
     let missing = post(
         &h,
         "/server/libraries/create",
-        Some(&lee),
+        Some(&admin),
         "name=Gone&path=/nope/nothing",
     )
     .await;

@@ -471,7 +471,7 @@ async fn annotations_playlists_queue_bookmarks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn shares_radio_chat_and_user_management() {
+async fn shares_radio_and_user_management() {
     let h = Harness::new();
     let root = h.music.path();
     make_track(root, "A/2000 - X/01 - S1.wav", 21, &tags("S1", "A", "X", 1));
@@ -531,13 +531,6 @@ async fn shares_radio_chat_and_user_management() {
     );
     h.ok("deleteInternetRadioStation", &format!("id={rid}"))
         .await;
-
-    h.ok("addChatMessage", "message=hi%20there").await;
-    let chat = h.ok("getChatMessages", "").await;
-    assert_eq!(
-        chat["chatMessages"]["chatMessage"][0]["message"],
-        "hi there"
-    );
 
     h.ok(
         "createUser",

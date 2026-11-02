@@ -92,14 +92,10 @@ async fn forwarded_for_is_ignored_unless_the_proxy_is_trusted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn api_keys_cannot_change_passwords_or_mint_keys() {
+async fn api_keys_cannot_mint_keys() {
     let h = Harness::new();
     let key = h.api_key().await;
-    for (endpoint, query) in [
-        ("changePassword", "username=admin&password=owned"),
-        ("juuzCreateApiKey", "name=sneaky"),
-        ("updateUser", "username=admin&password=owned"),
-    ] {
+    for (endpoint, query) in [("juuzCreateApiKey", "name=sneaky")] {
         let v = h
             .get(&format!("/rest/{endpoint}?apiKey={key}&f=json&{query}"))
             .await
@@ -113,19 +109,6 @@ async fn api_keys_cannot_change_passwords_or_mint_keys() {
         "ok"
     );
     assert_eq!(h.call("ping", "").await["status"], "ok");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn admins_cannot_delete_or_demote_themselves() {
-    let h = Harness::new();
-    let v = h.call("deleteUser", &format!("username={USER}")).await;
-    assert_eq!(v["error"]["code"], 50, "{v}");
-    let v = h
-        .call("updateUser", &format!("username={USER}&adminRole=false"))
-        .await;
-    assert_eq!(v["error"]["code"], 50, "{v}");
-    h.ok("createUser", "username=bob&password=pw").await;
-    h.ok("deleteUser", "username=bob").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -181,49 +164,45 @@ async fn lyrics_for_titles_with_dots_land_next_to_the_song() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn podcast_media_never_gets_a_scriptable_content_type() {
-    let feed = |base: &str| {
-        format!(
-            r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Evil</title>
-<item><guid>g1</guid><title>Ep</title><enclosure url="{base}/ep.mp3" length="9" type="text/html"/></item>
-</channel></rss>"#
-        )
-    };
-    let mock = mock_server(|base| {
-        vec![
-            route("/feed.xml", 200, feed(base)),
-            route("/ep.mp3", 200, "<script>alert(1)</script>"),
-        ]
-    });
-    let h = Harness::build(None, |c| c.podcasts.allow_private_hosts = true);
-    h.ok(
+async fn token_auth_can_be_switched_off() {
+    let h = Harness::build(None, |c| c.token_auth = false);
+    let token = juuz::auth::token_for(PASS, "saltsalt");
+    let v = h
+        .get(&format!(
+            "/rest/ping?u={USER}&t={token}&s=saltsalt&f=json&c=test"
+        ))
+        .await
+        .json();
+    assert_eq!(v["error"]["code"], 42, "{v}");
+    assert_eq!(h.call("ping", "").await["status"], "ok");
+    h.ok("createUser", "username=bob&password=pw").await;
+    let v = h.get(&as_user("bob", "pw", "ping", "")).await.json();
+    assert_eq!(v["status"], "ok", "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_endpoints_are_unknown() {
+    let h = Harness::new();
+    for endpoint in [
+        "getChatMessages",
+        "addChatMessage",
+        "getPodcasts",
         "createPodcastChannel",
-        &format!("url={}/feed.xml", mock.url),
-    )
-    .await;
-    let mut ep = String::new();
-    for _ in 0..100 {
-        let v = h.ok("getPodcasts", "").await;
-        if let Some(id) = v["podcasts"]["channel"][0]["episode"][0]["id"].as_str() {
-            ep = id.to_string();
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        "createUser",
+        "updateUser",
+        "deleteUser",
+        "changePassword",
+        "getVideos",
+        "getVideoInfo",
+        "getCaptions",
+        "hls",
+        "getAvatar",
+    ] {
+        let v = h
+            .get(&format!("/rest/{endpoint}?{}", h.auth()))
+            .await
+            .json();
+        assert_eq!(v["status"], "failed", "{endpoint}: {v}");
+        assert_eq!(v["error"]["message"], "unknown endpoint", "{endpoint}: {v}");
     }
-    h.ok("downloadPodcastEpisode", &format!("id={ep}")).await;
-    for _ in 0..100 {
-        let v = h.ok("getPodcasts", "").await;
-        if v["podcasts"]["channel"][0]["episode"][0]["status"] == "completed" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let r = h.get(&format!("/rest/stream?{}&id={ep}", h.auth())).await;
-    let ct = r.headers[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(ct.starts_with("audio/"), "{ct}");
-    assert_eq!(r.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
-    assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], "sandbox");
 }
