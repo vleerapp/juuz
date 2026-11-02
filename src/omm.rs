@@ -320,6 +320,15 @@ impl Client {
         if !url.starts_with("https://") && !plain_http_ok {
             bail!("artwork url is not https");
         }
+        if !self.allow_http_art {
+            let uri: ureq::http::Uri = url.parse().map_err(|_| anyhow!("invalid artwork url"))?;
+            let host = uri.host().ok_or_else(|| anyhow!("invalid artwork url"))?;
+            let port = uri.port_u16().unwrap_or(443);
+            let addrs: Vec<_> = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?.collect();
+            if addrs.is_empty() || !addrs.iter().all(|a| crate::net::is_public(a.ip())) {
+                bail!("artwork host is not a public address");
+            }
+        }
         let mut resp = self.agent.get(&url).call()?;
         let status = resp.status().as_u16();
         if status != 200 {

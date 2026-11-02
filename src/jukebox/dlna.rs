@@ -36,6 +36,7 @@ pub struct Position {
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(HTTP_TIMEOUT))
+        .max_redirects(0)
         .http_status_as_error(false)
         .build()
         .into()
@@ -111,8 +112,18 @@ struct Described {
     rc_url: Option<String>,
 }
 
+fn check_target(url: &str) -> Result<()> {
+    if let SocketAddr::V4(addr) = host_port(url)? {
+        let ip = addr.ip();
+        if ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() {
+            bail!("{url} is not a usable renderer address");
+        }
+    }
+    Ok(())
+}
+
 fn describe(agent: &ureq::Agent, location: &str) -> Result<Described> {
-    origin(location)?;
+    check_target(location)?;
     let mut resp = agent
         .get(location)
         .call()
@@ -149,9 +160,13 @@ fn describe(agent: &ureq::Agent, location: &str) -> Result<Described> {
                     continue;
                 };
                 if kind.starts_with("urn:schemas-upnp-org:service:AVTransport:") {
-                    av = Some(resolve(&base, control)?);
+                    let url = resolve(&base, control)?;
+                    check_target(&url)?;
+                    av = Some(url);
                 } else if kind.starts_with("urn:schemas-upnp-org:service:RenderingControl:") {
-                    rc = Some(resolve(&base, control)?);
+                    let url = resolve(&base, control)?;
+                    check_target(&url)?;
+                    rc = Some(url);
                 }
             }
         }

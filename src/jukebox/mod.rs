@@ -853,7 +853,10 @@ impl Jukebox {
                     tokio::task::spawn_blocking(move || Renderer::connect(&url))
                         .await
                         .map_err(|_| ApiError::generic("internal server error"))?
-                        .map_err(|e| ApiError::generic(format!("cannot use renderer: {e:#}")))?,
+                        .map_err(|e| {
+                            tracing::warn!("cannot use renderer: {e:#}");
+                            ApiError::generic("cannot use renderer")
+                        })?,
                 )
             }
             (None, Some(udn)) => {
@@ -870,7 +873,10 @@ impl Jukebox {
                     tokio::task::spawn_blocking(move || Renderer::connect(&device.location))
                         .await
                         .map_err(|_| ApiError::generic("internal server error"))?
-                        .map_err(|e| ApiError::generic(format!("cannot use renderer: {e:#}")))?,
+                        .map_err(|e| {
+                            tracing::warn!("cannot use renderer: {e:#}");
+                            ApiError::generic("cannot use renderer")
+                        })?,
                 )
             }
             (None, None) => None,

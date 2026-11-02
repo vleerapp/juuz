@@ -50,12 +50,7 @@ pub async fn control(ctx: Ctx) -> ApiResult {
     allowed(&ctx)?;
     let jb = ctx.st.jukebox.clone();
     let action = ctx.params.req("action")?.to_string();
-    if matches!(
-        action.as_str(),
-        "set" | "add" | "remove" | "shuffle" | "start" | "skip"
-    ) {
-        jb.set_owner(&ctx.user().id).await;
-    }
+    let uid = ctx.user().id.clone();
     let snap = match action.as_str() {
         "get" => {
             let (snap, queue) = jb.state().await;
@@ -78,6 +73,7 @@ pub async fn control(ctx: Ctx) -> ApiResult {
         "set" => {
             let ids = ids(&ctx);
             visible_songs(&ctx, &ids).await?;
+            jb.set_owner(&uid).await;
             jb.set(ids).await?
         }
         "add" => {
@@ -86,12 +82,23 @@ pub async fn control(ctx: Ctx) -> ApiResult {
                 return Err(ApiError::missing("id"));
             }
             visible_songs(&ctx, &ids).await?;
+            jb.set_owner(&uid).await;
             jb.add(ids).await?
         }
         "clear" => jb.clear().await?,
-        "remove" => jb.remove(index_param(&ctx, "index")?).await?,
-        "shuffle" => jb.shuffle().await?,
-        "start" => jb.start_playback().await?,
+        "remove" => {
+            let index = index_param(&ctx, "index")?;
+            jb.set_owner(&uid).await;
+            jb.remove(index).await?
+        }
+        "shuffle" => {
+            jb.set_owner(&uid).await;
+            jb.shuffle().await?
+        }
+        "start" => {
+            jb.set_owner(&uid).await;
+            jb.start_playback().await?
+        }
         "stop" => jb.stop_playback().await?,
         "skip" => {
             let index = index_param(&ctx, "index")?;
@@ -100,6 +107,7 @@ pub async fn control(ctx: Ctx) -> ApiResult {
                 Some(_) => return Err(ApiError::bad_param("offset")),
                 None => 0,
             };
+            jb.set_owner(&uid).await;
             jb.skip(index, offset).await?
         }
         "setGain" => {
