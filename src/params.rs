@@ -1,5 +1,13 @@
 use crate::error::ApiError;
 
+pub const MAX_TEXT: usize = 256;
+
+fn valid_http_url(raw: &str) -> bool {
+    raw.parse::<ureq::http::Uri>().is_ok_and(|u| {
+        matches!(u.scheme_str(), Some("http" | "https")) && u.host().is_some_and(|h| !h.is_empty())
+    })
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct Params(pub Vec<(String, String)>);
 
@@ -21,6 +29,30 @@ impl Params {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
+    }
+
+    pub fn text(&self, key: &str) -> Result<Option<&str>, ApiError> {
+        match self.get(key) {
+            Some(v) if v.chars().count() > MAX_TEXT => Err(ApiError::bad_param(key)),
+            v => Ok(v),
+        }
+    }
+
+    pub fn req_text(&self, key: &str) -> Result<&str, ApiError> {
+        self.req(key)?;
+        self.text(key)?.ok_or_else(|| ApiError::missing(key))
+    }
+
+    pub fn url(&self, key: &str) -> Result<Option<&str>, ApiError> {
+        match self.text(key)? {
+            Some(v) if !v.is_empty() && !valid_http_url(v) => Err(ApiError::bad_param(key)),
+            v => Ok(v),
+        }
+    }
+
+    pub fn req_url(&self, key: &str) -> Result<&str, ApiError> {
+        self.req(key)?;
+        self.url(key)?.ok_or_else(|| ApiError::missing(key))
     }
 
     pub fn all(&self, key: &str) -> Vec<&str> {
@@ -70,5 +102,26 @@ impl Params {
     pub fn bool(&self, key: &str) -> Option<bool> {
         self.get(key)
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_is_capped_and_urls_must_be_http() {
+        let long = "x".repeat(MAX_TEXT + 1);
+        let p = Params::parse(&format!(
+            "a={}&b={}&u=http://radio.example/stream&v=javascript:alert(1)&w=",
+            "x".repeat(MAX_TEXT),
+            long
+        ));
+        assert!(p.text("a").unwrap().is_some());
+        assert!(p.text("b").is_err());
+        assert!(p.url("u").unwrap().is_some());
+        assert!(p.url("v").is_err());
+        assert_eq!(p.url("w").unwrap(), Some(""));
+        assert!(p.req_url("w").is_err());
     }
 }

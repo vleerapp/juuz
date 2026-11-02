@@ -21,7 +21,6 @@ struct SongFile {
     mtime: i64,
     bitrate: i64,
     duration_ms: i64,
-    from_library: bool,
     path: PathBuf,
     content_type: String,
     title: String,
@@ -45,7 +44,6 @@ fn song_file(conn: &Connection, uid: Option<&str>, id: &str) -> Result<SongFile,
                     mtime: r.get(4)?,
                     bitrate: r.get(5)?,
                     duration_ms: r.get(6)?,
-                    from_library: true,
                     path: PathBuf::from(r.get::<_, String>(0)?),
                     content_type: r.get(1)?,
                     title: r.get(2)?,
@@ -54,63 +52,7 @@ fn song_file(conn: &Connection, uid: Option<&str>, id: &str) -> Result<SongFile,
             },
         )
         .optional()?;
-    if let Some(song) = song {
-        return Ok(song);
-    }
-    conn.query_row(
-        "SELECT path, COALESCE(content_type, 'audio/mpeg'), title FROM podcast_episodes
-         WHERE id = ?1 AND status = 'completed' AND path IS NOT NULL",
-        [id],
-        |r| {
-            let path = PathBuf::from(r.get::<_, String>(0)?);
-            let suffix = path
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let content_type = safe_media_type(&r.get::<_, String>(1)?, &suffix);
-            Ok(SongFile {
-                id: id.to_string(),
-                mtime: 0,
-                bitrate: 0,
-                duration_ms: 0,
-                from_library: false,
-                path,
-                content_type,
-                title: r.get(2)?,
-                suffix,
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| ApiError::not_found("song"))
-}
-
-fn safe_media_type(raw: &str, suffix: &str) -> String {
-    let essence = raw
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let allowed = essence.starts_with("audio/")
-        || matches!(
-            essence.as_str(),
-            "video/mp4" | "video/webm" | "application/ogg"
-        );
-    if allowed && essence.bytes().all(|b| b.is_ascii_graphic()) {
-        return essence;
-    }
-    match suffix.to_ascii_lowercase().as_str() {
-        "mp3" => "audio/mpeg",
-        "m4a" | "aac" => "audio/mp4",
-        "ogg" => "audio/ogg",
-        "opus" => "audio/opus",
-        "flac" => "audio/flac",
-        "wav" => "audio/wav",
-        "mp4" => "video/mp4",
-        _ => "application/octet-stream",
-    }
-    .to_string()
+    song.ok_or_else(|| ApiError::not_found("song"))
 }
 
 fn harden(headers: &mut HeaderMap) {
@@ -233,11 +175,7 @@ pub async fn stream(ctx: Ctx) -> ApiResult {
     }
     let song = song_for(&ctx).await?;
     note_streaming(&ctx, &song);
-    let wanted = ctx
-        .params
-        .get("format")
-        .and_then(Format::parse)
-        .filter(|_| song.from_library);
+    let wanted = ctx.params.get("format").and_then(Format::parse);
     if let Some(format) = wanted {
         let default = match format {
             Format::Opus | Format::Aac => 128,
@@ -282,6 +220,24 @@ const TRANSCODE_CACHE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 const ART_CACHE_LIMIT: u64 = 512 * 1024 * 1024;
 const MAX_ART_DIMENSION: u32 = 12_000;
 const MAX_ART_ALLOC: u64 = 256 * 1024 * 1024;
+
+static ART_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+static ART_EVICTED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+const ART_EVICT_INTERVAL: i64 = 30;
+
+fn art_evict_due() -> bool {
+    use std::sync::atomic::Ordering;
+    let now = crate::db::now();
+    let last = ART_EVICTED.load(Ordering::Relaxed);
+    now - last >= ART_EVICT_INTERVAL
+        && ART_EVICTED
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+}
+
+fn valid_hash(hash: &str) -> bool {
+    (1..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
 
 fn evict_cache(dir: &Path, keep: &Path, limit: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -478,6 +434,9 @@ pub fn warm_thumbnails(db: &crate::db::Db, cache_dir: &Path, sizes: &[u32]) {
             .ok()
             .and_then(|conn| album_art(&conn, &id).ok().flatten());
         let Some((hash, source)) = art else { continue };
+        if !valid_hash(&hash) {
+            continue;
+        }
         let missing: Vec<u32> = sizes
             .iter()
             .copied()
@@ -573,8 +532,14 @@ pub async fn cover_response(
 ) -> Result<Response, ApiError> {
     let cache_dir = st.cfg.art_cache_dir();
     let found = st.db.run(move |c| Ok(resolve_art(c, &uid, &id)?)).await?;
-    let (hash, source) = found.ok_or_else(|| ApiError::not_found("cover art"))?;
+    let (hash, source) = found
+        .filter(|(hash, _)| valid_hash(hash))
+        .ok_or_else(|| ApiError::not_found("cover art"))?;
 
+    let _permit = ART_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| ApiError::generic("internal server error"))?;
     let resp = tokio::task::spawn_blocking(move || -> Result<Response, ApiError> {
         if let Some(size) = size {
             let cached = cache_dir.join(format!("{hash}_{size}.jpg"));
@@ -592,7 +557,9 @@ pub async fn cover_response(
                         let tmp = cache_dir.join(format!(".{hash}_{size}.tmp"));
                         if std::fs::write(&tmp, &bytes).is_ok() {
                             let _ = std::fs::rename(&tmp, &cached);
-                            evict_cache(&cache_dir, &cached, ART_CACHE_LIMIT);
+                            if art_evict_due() {
+                                evict_cache(&cache_dir, &cached, ART_CACHE_LIMIT);
+                            }
                         }
                     }
                     Ok(image_response(
@@ -614,10 +581,6 @@ pub async fn cover_response(
     .await
     .map_err(|_| ApiError::generic("internal server error"))??;
     Ok(resp)
-}
-
-pub async fn get_avatar(_: Ctx) -> ApiResult {
-    Err(ApiError::not_found("avatar"))
 }
 
 pub async fn get_lyrics_by_song_id(ctx: Ctx) -> ApiResult {
@@ -672,7 +635,7 @@ pub async fn get_lyrics(ctx: Ctx) -> ApiResult {
         .run(move |c| {
             Ok(c.query_row(
                 "SELECT id FROM songs WHERE title = ?1 COLLATE NOCASE
-                   AND (?2 = '' OR display_artist LIKE '%' || ?2 || '%' COLLATE NOCASE)
+                   AND (?2 = '' OR instr(lower(display_artist), lower(?2)) > 0)
                    AND (library_id IN (SELECT library_id FROM user_libraries WHERE user_id = ?3)
                         OR EXISTS (SELECT 1 FROM users WHERE id = ?3 AND admin_role = 1)) LIMIT 1",
                 [&title, &artist, &uid],

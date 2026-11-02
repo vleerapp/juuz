@@ -157,7 +157,7 @@ pub async fn create_playlist(ctx: Ctx) -> ApiResult {
         ));
     }
     let existing = ctx.params.get("playlistId").map(str::to_string);
-    let name = ctx.params.get("name").map(str::to_string);
+    let name = ctx.params.text("name")?.map(str::to_string);
     let songs: Vec<String> = ctx
         .params
         .all("songId")
@@ -201,8 +201,8 @@ pub async fn create_playlist(ctx: Ctx) -> ApiResult {
 pub async fn update_playlist(ctx: Ctx) -> ApiResult {
     let me = ctx.user().clone();
     let id = ctx.params.req("playlistId")?.to_string();
-    let name = ctx.params.get("name").map(str::to_string);
-    let comment = ctx.params.get("comment").map(str::to_string);
+    let name = ctx.params.text("name")?.map(str::to_string);
+    let comment = ctx.params.text("comment")?.map(str::to_string);
     let public = ctx.params.bool("public");
     let add: Vec<String> = ctx
         .params

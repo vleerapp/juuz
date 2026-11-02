@@ -55,7 +55,23 @@ fn expand_songs(conn: &Connection, share_id: &str) -> Result<Vec<String>, ApiErr
             _ => {}
         }
     }
-    Ok(songs)
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT user_id FROM shares WHERE id = ?1",
+            [share_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(owner) = owner else {
+        return Ok(Vec::new());
+    };
+    let mut allowed = Vec::with_capacity(songs.len());
+    for song in songs {
+        if crate::db::libraries::can_access_song(conn, &owner, &song)? {
+            allowed.push(song);
+        }
+    }
+    Ok(allowed)
 }
 
 fn share_json(conn: &Connection, uid: &str, base: &str, s: &ShareRow) -> Result<Value, ApiError> {
@@ -137,7 +153,7 @@ pub async fn create_share(ctx: Ctx) -> ApiResult {
     if items.is_empty() {
         return Err(ApiError::missing("id"));
     }
-    let description = ctx.params.get("description").unwrap_or("").to_string();
+    let description = ctx.params.text("description")?.unwrap_or("").to_string();
     let expires = ctx
         .params
         .int("expires")?
@@ -198,7 +214,7 @@ pub async fn update_share(ctx: Ctx) -> ApiResult {
     require_share_role(&ctx)?;
     let me = ctx.user().clone();
     let id = ctx.params.req("id")?.to_string();
-    let description = ctx.params.get("description").map(str::to_string);
+    let description = ctx.params.text("description")?.map(str::to_string);
     let expires = ctx.params.int("expires")?;
     ctx.st
         .db
@@ -351,9 +367,9 @@ pub async fn get_radio_stations(ctx: Ctx) -> ApiResult {
 
 pub async fn create_radio_station(ctx: Ctx) -> ApiResult {
     ctx.require(User::can_radio)?;
-    let url = ctx.params.req("streamUrl")?.to_string();
-    let name = ctx.params.req("name")?.to_string();
-    let home = ctx.params.get("homepageUrl").map(str::to_string);
+    let url = ctx.params.req_url("streamUrl")?.to_string();
+    let name = ctx.params.req_text("name")?.to_string();
+    let home = ctx.params.url("homepageUrl")?.map(str::to_string);
     ctx.st
         .db
         .run(move |c| {
@@ -370,9 +386,9 @@ pub async fn create_radio_station(ctx: Ctx) -> ApiResult {
 pub async fn update_radio_station(ctx: Ctx) -> ApiResult {
     ctx.require(User::can_radio)?;
     let id = ctx.params.req("id")?.to_string();
-    let url = ctx.params.req("streamUrl")?.to_string();
-    let name = ctx.params.req("name")?.to_string();
-    let home = ctx.params.get("homepageUrl").map(str::to_string);
+    let url = ctx.params.req_url("streamUrl")?.to_string();
+    let name = ctx.params.req_text("name")?.to_string();
+    let home = ctx.params.url("homepageUrl")?.map(str::to_string);
     let changed = ctx
         .st
         .db
@@ -400,49 +416,5 @@ pub async fn delete_radio_station(ctx: Ctx) -> ApiResult {
     if changed == 0 {
         return Err(ApiError::not_found("station"));
     }
-    empty()
-}
-
-pub async fn get_chat_messages(ctx: Ctx) -> ApiResult {
-    let since = ctx.params.int_or("since", 0)?.max(0) / 1000;
-    let list = ctx
-        .st
-        .db
-        .run(move |c| {
-            let mut stmt = c.prepare(
-                "SELECT u.name, m.created_at, m.message FROM chat_messages m JOIN users u ON u.id = m.user_id
-                 WHERE m.created_at > ?1 ORDER BY m.created_at DESC, m.id DESC LIMIT 100",
-            )?;
-            let mut rows = stmt
-                .query_map([since], |r| {
-                    Ok(json!({"username": r.get::<_, String>(0)?, "time": r.get::<_, i64>(1)? * 1000,
-                        "message": r.get::<_, String>(2)?}))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.reverse();
-            Ok(rows)
-        })
-        .await?;
-    ok(json!({"chatMessages": {"chatMessage": list}}))
-}
-
-pub async fn add_chat_message(ctx: Ctx) -> ApiResult {
-    let message = ctx
-        .params
-        .req("message")?
-        .chars()
-        .take(2000)
-        .collect::<String>();
-    let uid = ctx.user().id.clone();
-    ctx.st
-        .db
-        .run(move |c| {
-            c.execute(
-                "INSERT INTO chat_messages(user_id, created_at, message) VALUES (?1, ?2, ?3)",
-                params![uid, now(), message],
-            )?;
-            Ok(())
-        })
-        .await?;
     empty()
 }

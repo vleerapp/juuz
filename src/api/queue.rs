@@ -171,7 +171,7 @@ pub async fn create_bookmark(ctx: Ctx) -> ApiResult {
         .int("position")?
         .ok_or_else(|| ApiError::missing("position"))?
         .max(0);
-    let comment = ctx.params.get("comment").unwrap_or("").to_string();
+    let comment = ctx.params.text("comment")?.unwrap_or("").to_string();
     let uid = ctx.user().id.clone();
     ctx.st
         .db
