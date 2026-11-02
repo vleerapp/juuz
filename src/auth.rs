@@ -18,6 +18,7 @@ use crate::state::AppState;
 
 pub struct Crypto {
     key: [u8; 32],
+    token_auth: bool,
 }
 
 impl Crypto {
@@ -27,7 +28,10 @@ impl Crypto {
             let key: [u8; 32] = bytes
                 .try_into()
                 .map_err(|_| anyhow!("secret key file must be exactly 32 bytes"))?;
-            return Ok(Crypto { key });
+            return Ok(Crypto {
+                key,
+                token_auth: true,
+            });
         }
         let key: [u8; 32] = rand::random();
         if let Some(parent) = path.parent() {
@@ -44,7 +48,23 @@ impl Crypto {
             .open(path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, &key))
             .context("writing secret key")?;
-        Ok(Crypto { key })
+        Ok(Crypto {
+            key,
+            token_auth: true,
+        })
+    }
+
+    pub fn with_token_auth(mut self, enabled: bool) -> Crypto {
+        self.token_auth = enabled;
+        self
+    }
+
+    pub fn token_auth(&self) -> bool {
+        self.token_auth
+    }
+
+    pub fn token_secret(&self, password: &str) -> Option<Vec<u8>> {
+        self.token_auth.then(|| self.seal(password.as_bytes()))
     }
 
     pub fn seal(&self, plain: &[u8]) -> Vec<u8> {
@@ -84,8 +104,11 @@ pub fn hash_password(password: &str) -> Result<String> {
         .map_err(|e| anyhow!("hashing password: {e}"))
 }
 
-pub async fn credentials(crypto: &Crypto, password: &str) -> Result<(String, Vec<u8>), ApiError> {
-    let sealed = crypto.seal(password.as_bytes());
+pub async fn credentials(
+    crypto: &Crypto,
+    password: &str,
+) -> Result<(String, Option<Vec<u8>>), ApiError> {
+    let sealed = crypto.token_secret(password);
     let password = password.to_string();
     let _permit = ARGON_SLOTS
         .acquire()
@@ -202,6 +225,7 @@ async fn authenticate_user(st: &AppState, p: &Params, name: String) -> Result<Us
     let secret = user
         .token_secret
         .as_deref()
+        .filter(|_| st.crypto.token_auth())
         .and_then(|s| st.crypto.open(s))
         .and_then(|b| String::from_utf8(b).ok());
 
@@ -218,15 +242,22 @@ async fn authenticate_user(st: &AppState, p: &Params, name: String) -> Result<Us
         if !ok {
             return Err(ApiError::wrong_credentials());
         }
-        let sealed = st.crypto.seal(password.as_bytes());
-        let id = user.id.clone();
-        st.db
-            .run(move |c| Ok(users::set_token_secret(c, &id, &sealed)?))
-            .await?;
+        if let Some(sealed) = st.crypto.token_secret(&password) {
+            let id = user.id.clone();
+            st.db
+                .run(move |c| Ok(users::set_token_secret(c, &id, &sealed)?))
+                .await?;
+        }
         return Ok(user);
     }
 
     if let (Some(token), Some(salt)) = (p.get("t"), p.get("s")) {
+        if !st.crypto.token_auth() {
+            return Err(ApiError::new(
+                42,
+                "token authentication is disabled on this server, use an api key",
+            ));
+        }
         let Some(password) = secret else {
             return Err(ApiError::new(
                 41,
