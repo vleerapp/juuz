@@ -266,7 +266,29 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
             endpoint(true, jukebox::scan_outputs),
         ),
         ("juuzSetJukeboxOutput", endpoint(true, jukebox::set_output)),
+        ("juuzSetJukeboxGroup", endpoint(true, jukebox::set_group)),
+        (
+            "juuzSetJukeboxPassword",
+            endpoint(true, jukebox::set_password),
+        ),
+        (
+            "juuzStartJukeboxPairing",
+            endpoint(true, jukebox::start_pairing),
+        ),
+        (
+            "juuzFinishJukeboxPairing",
+            endpoint(true, jukebox::finish_pairing),
+        ),
+        (
+            "juuzForgetJukeboxPairing",
+            endpoint(true, jukebox::forget_pairing),
+        ),
+        (
+            "juuzDeleteJukeboxGroup",
+            endpoint(true, jukebox::delete_group),
+        ),
         ("juuzJukeboxEvents", endpoint(true, jukebox::events)),
+        ("juuzJukeboxMove", endpoint(true, jukebox::move_item)),
     ]
 }
 
@@ -333,6 +355,17 @@ pub fn router(st: AppState) -> Router {
             axum::routing::post(crate::web::media::scrobble),
         )
         .route("/playback", axum::routing::post(crate::web::media::event))
+        .route("/outputs", axum::routing::get(crate::web::remote::outputs))
+        .route("/outputs/scan", axum::routing::post(crate::web::remote::scan))
+        .route("/output", axum::routing::post(crate::web::remote::select))
+        .route("/airplay", axum::routing::post(crate::web::remote::airplay))
+        .route("/group", axum::routing::post(crate::web::remote::group))
+        .route(
+            "/group/delete",
+            axum::routing::post(crate::web::remote::ungroup),
+        )
+        .route("/queue", axum::routing::get(crate::web::remote::state))
+        .route("/queue", axum::routing::post(crate::web::remote::queue))
         .route(
             "/jukebox/stream/{id}/{file}",
             axum::routing::get(jukebox::stream),

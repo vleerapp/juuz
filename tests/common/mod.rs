@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +60,7 @@ impl Harness {
             music_dir: music.path().to_path_buf(),
             ..Config::default()
         };
+        cfg.snapcast_port = 0;
         cfg.scan.on_start = false;
         cfg.scan.watch = false;
         cfg.admin.user = Some(USER.into());
@@ -496,4 +497,57 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
         }
     }
     String::from_utf8_lossy(&data).into_owned()
+}
+
+pub struct Message {
+    pub kind: u16,
+    pub refers_to: u16,
+    pub body: Vec<u8>,
+}
+
+pub fn send(sock: &mut TcpStream, kind: u16, id: u16, body: &[u8]) {
+    let mut head = Vec::new();
+    head.extend_from_slice(&kind.to_le_bytes());
+    head.extend_from_slice(&id.to_le_bytes());
+    head.extend_from_slice(&0u16.to_le_bytes());
+    head.extend_from_slice(&5i32.to_le_bytes());
+    head.extend_from_slice(&250_000i32.to_le_bytes());
+    head.extend_from_slice(&0i32.to_le_bytes());
+    head.extend_from_slice(&0i32.to_le_bytes());
+    head.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    head.extend_from_slice(body);
+    sock.write_all(&head).unwrap();
+}
+
+pub fn receive(sock: &mut TcpStream) -> Message {
+    let mut head = [0u8; 26];
+    sock.read_exact(&mut head).unwrap();
+    let size = u32::from_le_bytes([head[22], head[23], head[24], head[25]]) as usize;
+    let mut body = vec![0u8; size];
+    sock.read_exact(&mut body).unwrap();
+    Message {
+        kind: u16::from_le_bytes([head[0], head[1]]),
+        refers_to: u16::from_le_bytes([head[4], head[5]]),
+        body,
+    }
+}
+
+pub fn hello(sock: &mut TcpStream, id: &str, host: &str) {
+    let json = format!(
+        r#"{{"ClientName":"Snapclient","HostName":"{host}","ID":"{id}","SnapStreamProtocolVersion":2}}"#
+    );
+    let mut body = (json.len() as u32).to_le_bytes().to_vec();
+    body.extend_from_slice(json.as_bytes());
+    send(sock, 5, 1, &body);
+}
+
+pub fn speaker(h: &Harness, id: &str, host: &str) -> TcpStream {
+    let port = h.server.state.jukebox.snapcast_port().expect("listening");
+    let mut sock = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    hello(&mut sock, id, host);
+    assert_eq!(receive(&mut sock).kind, 3);
+    assert_eq!(receive(&mut sock).kind, 1);
+    sock
 }

@@ -5,18 +5,38 @@ use anyhow::{Context, Result, anyhow, bail};
 use roxmltree::Document;
 use socket2::{Domain, Protocol, Socket, Type};
 
+use super::output::{self, Output, State, Track, Unreachable};
+
 const SSDP: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), 1900);
 const AV_TRANSPORT: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const RENDERING_CONTROL: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 const MEDIA_RENDERER: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const DISCOVERY_WINDOW: Duration = Duration::from_millis(2500);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const SEEK_DELAY: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub udn: String,
     pub name: String,
     pub location: String,
+    pub protocol: String,
+}
+
+impl Device {
+    pub fn detail(&self) -> String {
+        match self.protocol.as_str() {
+            "dlna" => {
+                let rest = self
+                    .location
+                    .split_once("://")
+                    .map_or(&*self.location, |(_, r)| r);
+                let host = rest.split('/').next().unwrap_or_default();
+                host.rsplit_once(':').map_or(host, |(h, _)| h).to_string()
+            }
+            _ => self.location.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -179,6 +199,7 @@ fn describe(agent: &ureq::Agent, location: &str) -> Result<Described> {
                 udn: udn.to_string(),
                 name,
                 location: location.to_string(),
+                protocol: "dlna".into(),
             },
             av_url,
             rc_url: rc,
@@ -461,6 +482,120 @@ impl Renderer {
             ],
         )?;
         Ok(())
+    }
+}
+
+pub struct DlnaOutput {
+    renderer: Renderer,
+}
+
+fn net(e: anyhow::Error) -> anyhow::Error {
+    if e.downcast_ref::<ureq::Error>().is_some() {
+        anyhow::Error::new(Unreachable(format!("{e:#}")))
+    } else {
+        e
+    }
+}
+
+fn song_id_in(uri: &str) -> Option<String> {
+    let rest = uri.split_once("/jukebox/stream/")?.1;
+    rest.split('/').next().map(str::to_string)
+}
+
+impl DlnaOutput {
+    pub fn connect(location: &str) -> Result<DlnaOutput> {
+        Ok(DlnaOutput {
+            renderer: Renderer::connect(location).map_err(net)?,
+        })
+    }
+}
+
+impl Output for DlnaOutput {
+    fn device(&self) -> &Device {
+        &self.renderer.device
+    }
+
+    fn load(&self, track: &Track, offset: u64) -> Result<()> {
+        let r = &self.renderer;
+        let url = format!(
+            "http://{}:{}{}",
+            host(r.local_ip().map_err(net)?),
+            track.port,
+            track.stream_path
+        );
+        let meta = didl(&TrackMeta {
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            content_type: track.content_type,
+            url: &url,
+            duration_secs: track.duration_secs,
+        });
+        r.set_uri(&url, &meta).map_err(net)?;
+        r.play().map_err(net)?;
+        if offset > 0 {
+            std::thread::sleep(SEEK_DELAY);
+            if let Err(e) = r.seek(offset) {
+                tracing::debug!("seek after load failed: {e:#}");
+            }
+        }
+        Ok(())
+    }
+
+    fn resume(&self) -> Result<()> {
+        match self.state()? {
+            State::Playing | State::Transitioning => Ok(()),
+            _ => self.renderer.play().map_err(net),
+        }
+    }
+
+    fn pause(&self) -> Result<()> {
+        self.renderer
+            .pause()
+            .or_else(|_| self.renderer.stop())
+            .map_err(net)
+    }
+
+    fn stop(&self) -> Result<()> {
+        self.renderer.stop().map_err(net)
+    }
+
+    fn seek(&self, secs: u64) -> Result<()> {
+        self.renderer.seek(secs).map_err(net)
+    }
+
+    fn state(&self) -> Result<State> {
+        Ok(
+            match self.renderer.transport_state().map_err(net)?.as_str() {
+                "PLAYING" => State::Playing,
+                "PAUSED_PLAYBACK" => State::Paused,
+                "STOPPED" | "NO_MEDIA_PRESENT" => State::Stopped,
+                _ => State::Transitioning,
+            },
+        )
+    }
+
+    fn position(&self) -> Result<output::Position> {
+        let p = self.renderer.position().map_err(net)?;
+        Ok(output::Position {
+            song_id: p.track_uri.as_deref().and_then(song_id_in),
+            seconds: p.seconds,
+        })
+    }
+
+    fn volume(&self) -> Result<u32> {
+        self.renderer.volume().map_err(net)
+    }
+
+    fn set_volume(&self, percent: u32) -> Result<()> {
+        self.renderer.set_volume(percent).map_err(net)
+    }
+}
+
+fn host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v) => v.to_string(),
+        IpAddr::V6(v) => format!("[{v}]"),
     }
 }
 

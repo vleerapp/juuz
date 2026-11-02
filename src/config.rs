@@ -15,6 +15,8 @@ pub struct Config {
     pub lrclib_url: String,
     pub public_url: Option<String>,
     pub token_auth: bool,
+    pub snapcast_port: u16,
+    pub snapcast: bool,
     pub ratelimit: RateLimitConfig,
 }
 
@@ -95,6 +97,8 @@ impl Default for Config {
             lrclib_url: "https://lrclib.net/api".into(),
             public_url: None,
             token_auth: true,
+            snapcast_port: crate::jukebox::snapcast::DEFAULT_PORT,
+            snapcast: true,
             ratelimit: RateLimitConfig::default(),
         }
     }
@@ -158,6 +162,7 @@ impl Config {
                 .parse()
                 .map_err(|_| anyhow::anyhow!("JUUZ_RATE_LIMIT must be a number, got {v:?}"))?;
         }
+        cfg.snapcast = flag("JUUZ_SNAPCAST", cfg.snapcast)?;
         cfg.omm.enabled = flag("JUUZ_OMM", cfg.omm.enabled)?;
         cfg.lastfm.api_key = var("JUUZ_LASTFM_API_KEY");
         cfg.lastfm.secret = var("JUUZ_LASTFM_SECRET");

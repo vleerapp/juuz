@@ -11,6 +11,7 @@ pub mod lyrics;
 pub mod net;
 pub mod omm;
 pub mod params;
+pub mod pcm;
 pub mod ratelimit;
 pub mod response;
 pub mod scanner;
@@ -145,6 +146,7 @@ pub fn init(mut cfg: Config) -> Result<Server> {
             .next()
             .and_then(|p| p.parse().ok())
             .unwrap_or(4533),
+        cfg.snapcast.then_some(cfg.snapcast_port),
         live.clone(),
     );
     jukebox.start();

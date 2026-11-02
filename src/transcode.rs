@@ -67,7 +67,7 @@ fn lossy_rate(rate: u32) -> u32 {
     }
 }
 
-struct Resample {
+pub(crate) struct Resample {
     channels: usize,
     rs: Option<Fft<f32>>,
     in_fifo: Vec<f32>,
@@ -77,7 +77,7 @@ struct Resample {
 }
 
 impl Resample {
-    fn new(in_rate: u32, out_rate: u32, channels: usize) -> Result<Resample> {
+    pub(crate) fn new(in_rate: u32, out_rate: u32, channels: usize) -> Result<Resample> {
         let rs = if in_rate == out_rate {
             None
         } else {
@@ -107,7 +107,7 @@ impl Resample {
         self.emitted += (frames - skip) as u64;
     }
 
-    fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<()> {
+    pub(crate) fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<()> {
         self.total_in += (samples.len() / self.channels) as u64;
         let Some(mut rs) = self.rs.take() else {
             out.extend_from_slice(samples);
@@ -132,7 +132,7 @@ impl Resample {
         Ok(())
     }
 
-    fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
+    pub(crate) fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
         let Some(mut rs) = self.rs.take() else {
             return Ok(());
         };

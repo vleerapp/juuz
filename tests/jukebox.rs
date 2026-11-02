@@ -374,19 +374,29 @@ async fn output_survives_restart_setting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn only_admins_change_the_output() {
+async fn outputs_need_the_jukebox_role() {
     let h = Harness::new();
-    h.ok("createUser", "username=bob&password=pw&email=b@x")
-        .await;
+    h.ok(
+        "createUser",
+        "username=bob&password=pw&email=b@x&jukeboxRole=false",
+    )
+    .await;
     let call = |ep: &str| {
         let uri = format!("/rest/{ep}?u=bob&p=pw&f=json&c=t&url=http://127.0.0.1:1/x.xml");
         let h = &h;
         async move { h.get(&uri).await.json() }
     };
-    assert_eq!(call("juuzSetJukeboxOutput").await["error"]["code"], 50);
-    assert_eq!(call("juuzScanJukeboxOutputs").await["error"]["code"], 50);
+    for ep in [
+        "juuzSetJukeboxOutput",
+        "juuzScanJukeboxOutputs",
+        "juuzGetJukeboxOutputs",
+        "jukeboxControl",
+    ] {
+        assert_eq!(call(ep).await["error"]["code"], 50, "{ep}");
+    }
+    h.ok("updateUser", "username=bob&jukeboxRole=true").await;
     assert_eq!(call("juuzGetJukeboxOutputs").await["status"], "ok");
-    let _: Value = call("jukeboxControl").await;
+    assert_eq!(call("juuzScanJukeboxOutputs").await["status"], "ok");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -437,8 +447,13 @@ async fn restart_resumes_the_session() {
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let st = &h.server.state;
-    let fresh =
-        juuz::jukebox::Jukebox::new(st.db.clone(), st.crypto.clone(), 4533, st.live.clone());
+    let fresh = juuz::jukebox::Jukebox::new(
+        st.db.clone(),
+        st.crypto.clone(),
+        4533,
+        Some(0),
+        st.live.clone(),
+    );
     fresh.start();
     for _ in 0..100 {
         let snap = fresh.snapshot().await;

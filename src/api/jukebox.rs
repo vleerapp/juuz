@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 
 use super::model::{songs_by_ids, songs_json};
 use super::{ApiResult, Ctx, Reply, media, ok};
-use crate::db::users::User;
 use crate::error::ApiError;
 use crate::jukebox::{Outputs, Snapshot};
 use crate::state::AppState;
@@ -126,12 +125,45 @@ pub async fn control(ctx: Ctx) -> ApiResult {
     ok(json!({"jukeboxStatus": status_json(&snap)}))
 }
 
+pub async fn move_item(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    let from = index_param(&ctx, "from")?;
+    let to = index_param(&ctx, "to")?;
+    let jb = ctx.st.jukebox.clone();
+    jb.set_owner(&ctx.user().id).await;
+    let snap = jb.move_item(from, to).await?;
+    ok(json!({"jukeboxStatus": status_json(&snap)}))
+}
+
+fn group_json(g: &crate::jukebox::group::Group) -> Value {
+    json!({
+        "id": g.device().udn,
+        "name": g.name,
+        "protocol": g.device().protocol,
+        "member": g.members.iter().map(|m| json!({
+            "id": m.udn, "name": m.name, "protocol": m.protocol, "delayMs": m.delay_ms,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn outputs_json(o: &Outputs) -> Value {
+    let device = |d: &crate::jukebox::dlna::Device| {
+        let mut v =
+            json!({"id": d.udn, "name": d.name, "protocol": d.protocol, "detail": d.detail()});
+        if let Some(l) = o.locks.get(&d.udn) {
+            v["lock"] = json!({"needs": l.needs, "configured": l.configured, "paired": l.paired});
+        }
+        v
+    };
     let mut v = json!({
-        "device": o.devices.iter().map(|d| json!({"id": d.udn, "name": d.name})).collect::<Vec<_>>(),
+        "device": o.devices.iter().map(device).collect::<Vec<_>>(),
+        "group": o.groups.iter().map(group_json).collect::<Vec<_>>(),
+        "speakers": o.speakers,
     });
     if let Some((d, online)) = &o.current {
-        v["current"] = json!({"id": d.udn, "name": d.name, "online": online});
+        let mut current = device(d);
+        current["online"] = json!(online);
+        v["current"] = current;
     }
     json!({"juuzJukeboxOutputs": v})
 }
@@ -157,16 +189,89 @@ async fn visible_songs(ctx: &Ctx, ids: &[String]) -> Result<(), ApiError> {
 }
 
 pub async fn scan_outputs(ctx: Ctx) -> ApiResult {
-    ctx.require(User::can_server)?;
+    allowed(&ctx)?;
     ctx.st.jukebox.scan().await?;
     ok(outputs_json(&ctx.st.jukebox.outputs().await))
 }
 
 pub async fn set_output(ctx: Ctx) -> ApiResult {
-    ctx.require(User::can_server)?;
+    allowed(&ctx)?;
     let id = ctx.params.get("id").filter(|s| !s.is_empty());
     let url = ctx.params.get("url").filter(|s| !s.is_empty());
+    if id.is_some_and(|id| id.starts_with(crate::jukebox::group::BROWSER_PREFIX)) {
+        return Err(ApiError::bad_param("id"));
+    }
     ctx.st.jukebox.select(id, url).await?;
+    ok(outputs_json(&ctx.st.jukebox.outputs().await))
+}
+
+pub fn group_members(params: &crate::params::Params) -> Result<Vec<(String, i32)>, ApiError> {
+    let delays = params.all("delay");
+    params
+        .all("member")
+        .into_iter()
+        .enumerate()
+        .map(|(i, udn)| {
+            let delay = match delays.get(i).filter(|d| !d.is_empty()) {
+                Some(d) => d.parse::<i32>().map_err(|_| ApiError::bad_param("delay"))?,
+                None => 0,
+            };
+            Ok((udn.to_string(), delay))
+        })
+        .collect()
+}
+
+pub async fn set_group(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    let id = ctx
+        .params
+        .get("id")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.strip_prefix(crate::jukebox::group::PREFIX).unwrap_or(s));
+    let name = ctx.params.req_text("name")?;
+    let members = group_members(&ctx.params)?;
+    ctx.st.jukebox.save_group(id, name, members).await?;
+    ok(outputs_json(&ctx.st.jukebox.outputs().await))
+}
+
+pub async fn set_password(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    let id = ctx.params.req("id")?;
+    let password = ctx.params.text("password")?.map(str::to_string);
+    ctx.st.jukebox.airplay_password(id, password).await?;
+    ok(outputs_json(&ctx.st.jukebox.outputs().await))
+}
+
+pub async fn start_pairing(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    ctx.st
+        .jukebox
+        .airplay_pair_start(ctx.params.req("id")?)
+        .await?;
+    ok(outputs_json(&ctx.st.jukebox.outputs().await))
+}
+
+pub async fn finish_pairing(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    let id = ctx.params.req("id")?;
+    ctx.st
+        .jukebox
+        .airplay_pair_finish(id, ctx.params.req_text("pin")?)
+        .await?;
+    ok(outputs_json(&ctx.st.jukebox.outputs().await))
+}
+
+pub async fn forget_pairing(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    ctx.st.jukebox.airplay_forget(ctx.params.req("id")?).await?;
+    ok(outputs_json(&ctx.st.jukebox.outputs().await))
+}
+
+pub async fn delete_group(ctx: Ctx) -> ApiResult {
+    allowed(&ctx)?;
+    let id = ctx.params.req("id")?;
+    let id = id.strip_prefix(crate::jukebox::group::PREFIX).unwrap_or(id);
+    ctx.st.jukebox.delete_group(id).await?;
     ok(outputs_json(&ctx.st.jukebox.outputs().await))
 }
 
