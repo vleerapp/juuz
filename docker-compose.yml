@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     ports:
       - "4533:4533"
+      - "1704:1704" # snapcast speakers
     environment:
       JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password # first start only, random and logged if unset
       JUUZ_PUBLIC_URL: "https://juuz.example.com" # base url for share links, default from request

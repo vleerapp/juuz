@@ -24,7 +24,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 - Live SQLite library that watches the music folders
 - Opus, MP3 and AAC transcoding (`format=opus`, `mp3`, `aac`) in pure Rust, no ffmpeg
 - Shares, internet radio, play queue, bookmarks
-- Jukebox: the server plays to a DLNA speaker and any `jukeboxControl` app (Feishin) acts as the remote
+- Jukebox: the server plays to DLNA, AirPlay or Snapcast speakers, alone or as a synced group; any `jukeboxControl` app (Feishin) acts as the remote
 - **[Web UI](#web-ui)**: a keyboard-driven terminal-style interface for stats, account settings and user management
 
 ## Installation
@@ -38,6 +38,7 @@ services:
     restart: unless-stopped
     ports:
       - "4533:4533"
+      - "1704:1704" # snapcast speakers
     environment:
       JUUZ_ADMIN_PASSWORD: replace-with-a-long-random-password # first start only, random and logged if unset
       JUUZ_PUBLIC_URL: "https://juuz.example.com" # base url for share links, default from request
@@ -59,6 +60,18 @@ volumes:
 The server runs on port 4533. The music folder must be writable by uid 1000, since uploads are saved there.
 
 For Last.fm, create an API account at [last.fm/api](https://www.last.fm/api/account/create), set both variables and restart. Each user then links their account on the `account` page.
+
+## Jukebox outputs
+
+Play to DLNA, AirPlay and Snapcast speakers or to another browser you have open, from the web UI or any `jukeboxControl` app. Combine outputs into synced groups with a delay per member, and the queue, volume and output stay in sync across every open device.
+
+Docker needs host networking to discover DLNA and AirPlay receivers. For Snapcast, publish port 1704, or set `JUUZ_SNAPCAST=false` to turn it off.
+
+Apps can find these extensions with `getOpenSubsonicExtensions`, everything else is the standard `jukeboxControl`:
+
+- `juuzJukeboxOutput` lists and selects outputs and builds groups (`juuzGetJukeboxOutputs`, `juuzSetJukeboxOutput`, `juuzSetJukeboxGroup`)
+- `juuzJukeboxEvents` is a live stream of the playback state
+- `juuzJukeboxQueue` reorders the queue (`juuzJukeboxMove`)
 
 ## Song upload Extension
 
