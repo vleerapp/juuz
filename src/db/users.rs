@@ -20,7 +20,6 @@ pub struct User {
     pub playlist: bool,
     pub cover_art: bool,
     pub comment: bool,
-    pub podcast: bool,
     pub share: bool,
     pub jukebox: bool,
     pub scrobbling: bool,
@@ -45,7 +44,6 @@ pub struct RoleUpdate {
     pub playlist: Option<bool>,
     pub cover_art: Option<bool>,
     pub comment: Option<bool>,
-    pub podcast: Option<bool>,
     pub share: Option<bool>,
     pub jukebox: Option<bool>,
     pub scan: Option<bool>,
@@ -62,7 +60,7 @@ pub struct RoleUpdate {
 
 const COLS: &str = "id, name, password_hash, token_secret, email, admin_role, settings_role, \
     stream_role, download_role, upload_role, playlist_role, cover_art_role, comment_role, \
-    podcast_role, share_role, jukebox_role, scrobbling_enabled, max_bit_rate, \
+    share_role, jukebox_role, scrobbling_enabled, max_bit_rate, \
     scan_role, server_role, radio_role, delete_role, library_role, catalogue_role, upload_library_id, keys_role";
 
 fn map(r: &Row) -> rusqlite::Result<User> {
@@ -80,19 +78,18 @@ fn map(r: &Row) -> rusqlite::Result<User> {
         playlist: r.get(10)?,
         cover_art: r.get(11)?,
         comment: r.get(12)?,
-        podcast: r.get(13)?,
-        share: r.get(14)?,
-        jukebox: r.get(15)?,
-        scrobbling: r.get(16)?,
-        max_bit_rate: r.get(17)?,
-        scan: r.get(18)?,
-        server: r.get(19)?,
-        radio: r.get(20)?,
-        delete: r.get(21)?,
-        library: r.get(22)?,
-        catalogue: r.get(23)?,
-        upload_library_id: r.get(24)?,
-        keys: r.get(25)?,
+        share: r.get(13)?,
+        jukebox: r.get(14)?,
+        scrobbling: r.get(15)?,
+        max_bit_rate: r.get(16)?,
+        scan: r.get(17)?,
+        server: r.get(18)?,
+        radio: r.get(19)?,
+        delete: r.get(20)?,
+        library: r.get(21)?,
+        catalogue: r.get(22)?,
+        upload_library_id: r.get(23)?,
+        keys: r.get(24)?,
     })
 }
 
@@ -142,7 +139,7 @@ impl User {
             "playlistRole": self.playlist || self.admin,
             "coverArtRole": self.cover_art || self.admin,
             "commentRole": self.comment || self.admin,
-            "podcastRole": self.podcast || self.admin,
+            "podcastRole": false,
             "streamRole": self.stream || self.admin,
             "jukeboxRole": self.jukebox || self.admin,
             "shareRole": self.share || self.admin,
@@ -277,7 +274,7 @@ pub fn set_token_secret(conn: &Connection, id: &str, secret: &[u8]) -> rusqlite:
 }
 
 pub fn update_roles(conn: &Connection, id: &str, u: &RoleUpdate) -> rusqlite::Result<()> {
-    let flags: [(&str, Option<bool>); 19] = [
+    let flags: [(&str, Option<bool>); 18] = [
         ("admin_role", u.admin),
         ("settings_role", u.settings),
         ("stream_role", u.stream),
@@ -286,7 +283,6 @@ pub fn update_roles(conn: &Connection, id: &str, u: &RoleUpdate) -> rusqlite::Re
         ("playlist_role", u.playlist),
         ("cover_art_role", u.cover_art),
         ("comment_role", u.comment),
-        ("podcast_role", u.podcast),
         ("share_role", u.share),
         ("jukebox_role", u.jukebox),
         ("scan_role", u.scan),

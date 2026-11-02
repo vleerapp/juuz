@@ -11,10 +11,10 @@ pub struct Config {
     pub upload: UploadConfig,
     pub omm: OmmConfig,
     pub admin: AdminConfig,
-    pub podcasts: PodcastConfig,
     pub lastfm: LastfmConfig,
     pub lrclib_url: String,
     pub public_url: Option<String>,
+    pub token_auth: bool,
     pub ratelimit: RateLimitConfig,
 }
 
@@ -81,13 +81,6 @@ impl Default for LastfmConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PodcastConfig {
-    pub enabled: bool,
-    pub allow_private_hosts: bool,
-    pub max_episode_size: u64,
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -98,10 +91,10 @@ impl Default for Config {
             upload: UploadConfig::default(),
             omm: OmmConfig::default(),
             admin: AdminConfig::default(),
-            podcasts: PodcastConfig::default(),
             lastfm: LastfmConfig::default(),
             lrclib_url: "https://lrclib.net/api".into(),
             public_url: None,
+            token_auth: true,
             ratelimit: RateLimitConfig::default(),
         }
     }
@@ -137,16 +130,6 @@ impl Default for OmmConfig {
     }
 }
 
-impl Default for PodcastConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            allow_private_hosts: false,
-            max_episode_size: 2 * 1024 * 1024 * 1024,
-        }
-    }
-}
-
 fn var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
@@ -167,6 +150,7 @@ impl Config {
         let mut cfg = Config::default();
         cfg.admin.password = var("JUUZ_ADMIN_PASSWORD");
         cfg.public_url = var("JUUZ_PUBLIC_URL").map(|u| u.trim().trim_end_matches('/').to_string());
+        cfg.token_auth = flag("JUUZ_TOKEN_AUTH", cfg.token_auth)?;
         cfg.ratelimit.trust_proxy = flag("JUUZ_TRUST_PROXY", cfg.ratelimit.trust_proxy)?;
         if let Some(v) = var("JUUZ_RATE_LIMIT") {
             cfg.ratelimit.per_minute = v
@@ -199,10 +183,6 @@ impl Config {
 
     pub fn transcode_dir(&self) -> PathBuf {
         self.data_dir.join("cache").join("transcode")
-    }
-
-    pub fn podcast_dir(&self) -> PathBuf {
-        self.data_dir.join("podcasts")
     }
 
     pub fn secret_path(&self) -> PathBuf {

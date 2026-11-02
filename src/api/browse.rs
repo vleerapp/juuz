@@ -403,11 +403,3 @@ pub async fn get_top_songs(ctx: Ctx) -> ApiResult {
         .await?;
     ok(json!({"topSongs": {"song": songs}}))
 }
-
-pub async fn get_videos(_: Ctx) -> ApiResult {
-    ok(json!({"videos": {}}))
-}
-
-pub async fn get_video_info(_: Ctx) -> ApiResult {
-    Err(ApiError::not_found("video"))
-}

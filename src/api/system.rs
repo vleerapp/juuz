@@ -37,13 +37,3 @@ pub async fn token_info(ctx: Ctx) -> ApiResult {
 pub async fn unknown(_: Ctx) -> ApiResult {
     Err(ApiError::generic("unknown endpoint"))
 }
-
-pub async fn not_supported(_: Ctx) -> ApiResult {
-    Err(ApiError::generic(
-        "this operation is not supported by the server",
-    ))
-}
-
-pub async fn not_found(_: Ctx) -> ApiResult {
-    Err(ApiError::not_found("requested item"))
-}

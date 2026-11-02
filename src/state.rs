@@ -29,7 +29,6 @@ pub struct AppState {
     pub lastfm: Option<Arc<crate::lastfm::Client>>,
     pub omm_upload: Option<Arc<omm::Client>>,
     pub omm_handle: Option<omm::Handle>,
-    pub podcasts: Arc<crate::podcast::Fetcher>,
     pub transcode_slots: Arc<tokio::sync::Semaphore>,
     pub upload_lock: Arc<tokio::sync::Mutex<()>>,
     pub ratelimit: Arc<crate::ratelimit::RateLimiter>,

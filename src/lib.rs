@@ -8,9 +8,9 @@ pub mod jukebox;
 pub mod lastfm;
 pub mod live;
 pub mod lyrics;
+pub mod net;
 pub mod omm;
 pub mod params;
-pub mod podcast;
 pub mod ratelimit;
 pub mod response;
 pub mod scanner;
@@ -58,8 +58,8 @@ fn bootstrap_admin(cfg: &Config, db: &Db, crypto: &Crypto) -> Result<()> {
         tracing::warn!("JUUZ_ADMIN_PASSWORD is the example value 'change-me', change it");
     }
     let hash = auth::hash_password(&password)?;
-    let secret = crypto.seal(password.as_bytes());
-    db::users::create(&conn, &name, &hash, Some(&secret), true)?;
+    let secret = crypto.token_secret(&password);
+    db::users::create(&conn, &name, &hash, secret.as_deref(), true)?;
     if generated {
         tracing::warn!(
             "created admin user '{name}' with generated password '{password}'; change it"
@@ -78,7 +78,19 @@ pub fn init(mut cfg: Config) -> Result<Server> {
     let db = Db::open(&cfg.db_path(), cfg.music_dir.clone())?;
     tracing::info!("music dir {}", cfg.music_dir.display());
 
-    let crypto = Arc::new(Crypto::load_or_create(&cfg.secret_path())?);
+    let crypto =
+        Arc::new(Crypto::load_or_create(&cfg.secret_path())?.with_token_auth(cfg.token_auth));
+    if !cfg.token_auth {
+        let cleared = db.conn()?.execute(
+            "UPDATE users SET token_secret = NULL WHERE token_secret IS NOT NULL",
+            [],
+        )?;
+        if cleared > 0 {
+            tracing::info!(
+                "token authentication is off, removed {cleared} stored password secrets"
+            );
+        }
+    }
     bootstrap_admin(&cfg, &db, &crypto)?;
 
     let conn = db.conn()?;
@@ -116,7 +128,6 @@ pub fn init(mut cfg: Config) -> Result<Server> {
     };
 
     let cfg_ratelimit = cfg.ratelimit.clone();
-    let cfg_podcasts = cfg.podcasts.clone();
     let cfg_lrclib = cfg.lrclib_url.clone();
     let cfg_lastfm = lastfm::Client::new(&cfg.lastfm).map(Arc::new);
     if cfg_lastfm.is_some() {
@@ -147,7 +158,6 @@ pub fn init(mut cfg: Config) -> Result<Server> {
         omm_upload: cfg_omm_upload,
         omm: omm_client,
         omm_handle,
-        podcasts: Arc::new(podcast::Fetcher::new(&cfg_podcasts)),
         transcode_slots: Arc::new(tokio::sync::Semaphore::new(
             std::thread::available_parallelism()
                 .map(|n| (n.get() / 2).max(1))

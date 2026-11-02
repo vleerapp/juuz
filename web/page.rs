@@ -117,7 +117,6 @@ fn config_rows(cx: &Cx) -> Vec<(&'static str, String)> {
                 "off".into()
             },
         ),
-        ("podcasts", onoff(cfg.podcasts.enabled)),
         (
             "last.fm",
             onoff(cfg.lastfm.api_key.is_some() && cfg.lastfm.secret.is_some()),
@@ -479,7 +478,7 @@ fn wedge(hour: usize, plays: i64, peak: i64) -> String {
     format!("clip-path: polygon({}){}", points.join(", "), fade)
 }
 
-fn flags(u: &User) -> [(&'static str, &'static str, bool); 17] {
+fn flags(u: &User) -> [(&'static str, &'static str, bool); 16] {
     [
         ("admin", "admin", u.admin),
         ("settings", "settings", u.settings || u.admin),
@@ -489,7 +488,6 @@ fn flags(u: &User) -> [(&'static str, &'static str, bool); 17] {
         ("playlist", "playlists", u.playlist || u.admin),
         ("cover_art", "cover art", u.cover_art || u.admin),
         ("comment", "comments", u.comment || u.admin),
-        ("podcast", "podcasts", u.podcast || u.admin),
         ("share", "sharing", u.share || u.admin),
         ("jukebox", "jukebox", u.jukebox || u.admin),
         ("scan", "library scans", u.scan || u.admin),

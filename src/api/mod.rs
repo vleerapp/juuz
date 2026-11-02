@@ -6,7 +6,6 @@ pub mod lists;
 pub mod media;
 pub mod model;
 pub mod playlists;
-pub mod podcasts;
 pub mod queue;
 pub mod search;
 pub mod social;
@@ -165,10 +164,6 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
         ("tokenInfo", endpoint(true, system::token_info)),
         ("getUser", endpoint(true, users::get_user)),
         ("getUsers", endpoint(true, users::get_users)),
-        ("createUser", endpoint(true, users::create_user)),
-        ("updateUser", endpoint(true, users::update_user)),
-        ("deleteUser", endpoint(true, users::delete_user)),
-        ("changePassword", endpoint(true, users::change_password)),
         ("juuzCreateApiKey", endpoint(true, users::create_api_key)),
         ("juuzLastfmStatus", endpoint(true, lastfm::status)),
         ("juuzLastfmAuthUrl", endpoint(true, lastfm::auth_url)),
@@ -197,8 +192,6 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
             endpoint(true, browse::get_similar_songs2),
         ),
         ("getTopSongs", endpoint(true, browse::get_top_songs)),
-        ("getVideos", endpoint(true, browse::get_videos)),
-        ("getVideoInfo", endpoint(true, browse::get_video_info)),
         ("getAlbumList", endpoint(true, lists::get_album_list)),
         ("getAlbumList2", endpoint(true, lists::get_album_list2)),
         ("getRandomSongs", endpoint(true, lists::get_random_songs)),
@@ -211,7 +204,6 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
         ("stream", endpoint(true, media::stream)),
         ("download", endpoint(true, media::download)),
         ("getCoverArt", endpoint(true, media::get_cover_art)),
-        ("getAvatar", endpoint(true, media::get_avatar)),
         ("getLyrics", endpoint(true, media::get_lyrics)),
         (
             "getLyricsBySongId",
@@ -263,34 +255,7 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
             "deleteInternetRadioStation",
             endpoint(true, social::delete_radio_station),
         ),
-        ("getPodcasts", endpoint(true, podcasts::get_podcasts)),
-        (
-            "getNewestPodcasts",
-            endpoint(true, podcasts::get_newest_podcasts),
-        ),
-        (
-            "getPodcastEpisode",
-            endpoint(true, podcasts::get_podcast_episode),
-        ),
-        (
-            "createPodcastChannel",
-            endpoint(true, podcasts::create_channel),
-        ),
-        ("refreshPodcasts", endpoint(true, podcasts::refresh)),
-        (
-            "deletePodcastChannel",
-            endpoint(true, podcasts::delete_channel),
-        ),
-        (
-            "deletePodcastEpisode",
-            endpoint(true, podcasts::delete_episode),
-        ),
-        (
-            "downloadPodcastEpisode",
-            endpoint(true, podcasts::download_episode),
-        ),
         ("search", endpoint(true, search::legacy_search)),
-        ("hls", endpoint(true, system::not_supported)),
         ("jukeboxControl", endpoint(true, jukebox::control)),
         (
             "juuzGetJukeboxOutputs",
@@ -302,9 +267,6 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
         ),
         ("juuzSetJukeboxOutput", endpoint(true, jukebox::set_output)),
         ("juuzJukeboxEvents", endpoint(true, jukebox::events)),
-        ("getCaptions", endpoint(true, system::not_found)),
-        ("getChatMessages", endpoint(true, social::get_chat_messages)),
-        ("addChatMessage", endpoint(true, social::add_chat_message)),
     ]
 }
 
@@ -342,6 +304,17 @@ fn too_many(req: &Request, retry: u64) -> Response {
     resp
 }
 
+async fn safe_headers(mut resp: Response) -> Response {
+    let headers = resp.headers_mut();
+    headers
+        .entry(header::X_CONTENT_TYPE_OPTIONS)
+        .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+    headers
+        .entry(header::REFERRER_POLICY)
+        .or_insert(axum::http::HeaderValue::from_static("same-origin"));
+    resp
+}
+
 pub fn router(st: AppState) -> Router {
     let mut r = Router::new();
     for (name, handler) in endpoints() {
@@ -371,7 +344,12 @@ pub fn router(st: AppState) -> Router {
         )
         .fallback(endpoint(false, system::unknown))
         .layer(axum::middleware::from_fn_with_state(st.clone(), guard))
+        .layer(axum::middleware::map_response(safe_headers))
         .layer(tower_http::cors::CorsLayer::permissive())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(|req: &Request| {
+                tracing::debug_span!("request", method = %req.method(), path = %req.uri().path())
+            }),
+        )
         .with_state(st)
 }

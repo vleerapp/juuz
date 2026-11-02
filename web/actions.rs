@@ -94,7 +94,7 @@ async fn password(cx: &Cx, Form(form): Form<PasswordForm>) -> Result<SeeOther> {
     let keep = token(cx).await?;
     st.db
         .run(move |c| {
-            users::set_password(c, &user.id, &hash, Some(&sealed))?;
+            users::set_password(c, &user.id, &hash, sealed.as_deref())?;
             users::delete_sessions_except(c, &user.id, &keep)?;
             Ok(())
         })
@@ -234,7 +234,7 @@ async fn create_user(cx: &Cx, Form(form): Form<CreateForm>) -> Result<SeeOther> 
             if users::by_name(c, &name)?.is_some() {
                 return Ok(false);
             }
-            users::create(c, &name, &hash, Some(&sealed), admin)?;
+            users::create(c, &name, &hash, sealed.as_deref(), admin)?;
             Ok(true)
         })
         .await
@@ -262,7 +262,6 @@ struct UpdateForm {
     playlist: Option<String>,
     cover_art: Option<String>,
     comment: Option<String>,
-    podcast: Option<String>,
     share: Option<String>,
     jukebox: Option<String>,
     keys: Option<String>,
@@ -287,7 +286,6 @@ async fn update_user(cx: &Cx, Form(form): Form<UpdateForm>) -> Result<SeeOther> 
         playlist: Some(form.playlist.is_some()),
         cover_art: Some(form.cover_art.is_some()),
         comment: Some(form.comment.is_some()),
-        podcast: Some(form.podcast.is_some()),
         share: Some(form.share.is_some()),
         jukebox: Some(form.jukebox.is_some()),
         keys: Some(form.keys.is_some()),
@@ -322,7 +320,7 @@ async fn update_user(cx: &Cx, Form(form): Form<UpdateForm>) -> Result<SeeOther> 
             }
             users::update_roles(c, &target.id, &roles)?;
             if let Some((hash, sealed)) = credentials {
-                users::set_password(c, &target.id, &hash, Some(&sealed))?;
+                users::set_password(c, &target.id, &hash, sealed.as_deref())?;
                 if own {
                     users::delete_sessions_except(c, &target.id, &keep)?;
                 } else {
