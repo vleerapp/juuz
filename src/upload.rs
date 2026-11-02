@@ -171,9 +171,9 @@ pub fn target_relative(meta: &Meta, ext: &str) -> PathBuf {
     p
 }
 
-pub fn unique_path(candidate: PathBuf) -> PathBuf {
+pub fn unique_path(candidate: PathBuf) -> Option<PathBuf> {
     if !candidate.exists() {
-        return candidate;
+        return Some(candidate);
     }
     let stem = candidate
         .file_stem()
@@ -186,10 +186,24 @@ pub fn unique_path(candidate: PathBuf) -> PathBuf {
     for n in 2..1000 {
         let next = candidate.with_file_name(format!("{stem} ({n}).{ext}"));
         if !next.exists() {
-            return next;
+            return Some(next);
         }
     }
-    candidate
+    None
+}
+
+pub fn contained_real(root: &Path, target: &Path) -> bool {
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    let mut probe = Some(target);
+    while let Some(p) = probe {
+        if let Ok(real) = std::fs::canonicalize(p) {
+            return real.starts_with(&root);
+        }
+        probe = p.parent();
+    }
+    false
 }
 
 pub fn contained(root: &Path, target: &Path) -> bool {
@@ -286,6 +300,34 @@ pub fn write_tags(path: &Path, new: &Meta, old: &Meta) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unique_path_gives_up_instead_of_returning_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("a.mp3");
+        std::fs::write(&base, b"x").unwrap();
+        for n in 2..1000 {
+            std::fs::write(dir.path().join(format!("a ({n}).mp3")), b"x").unwrap();
+        }
+        assert_eq!(unique_path(base), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_real_rejects_symlink_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+        std::fs::create_dir(root.path().join("real")).unwrap();
+        assert!(contained_real(
+            root.path(),
+            &root.path().join("real/new.mp3")
+        ));
+        assert!(!contained_real(
+            root.path(),
+            &root.path().join("link/new.mp3")
+        ));
+    }
+
     use super::*;
 
     #[test]

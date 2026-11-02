@@ -384,6 +384,24 @@ async fn song_json(st: &AppState, uid: &str, id: &str) -> Result<serde_json::Val
         .await
 }
 
+async fn move_no_clobber(from: &Path, to: &Path) -> Result<(), ApiError> {
+    match tokio::fs::hard_link(from, to).await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(from).await;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(bad_upload("target file already exists"))
+        }
+        Err(_) => {
+            if tokio::fs::try_exists(to).await.unwrap_or(false) {
+                return Err(bad_upload("target file already exists"));
+            }
+            Ok(tokio::fs::rename(from, to).await?)
+        }
+    }
+}
+
 async fn process_song(
     st: &AppState,
     user: &User,
@@ -415,8 +433,9 @@ async fn process_song(
 
     let relative = target_relative(&meta, ext);
     let root = &library.path;
-    let final_path = unique_path(root.join(&relative));
-    if !upload::contained(root, &final_path) {
+    let final_path = unique_path(root.join(&relative))
+        .ok_or_else(|| bad_upload("too many files with the same name"))?;
+    if !upload::contained(root, &final_path) || !upload::contained_real(root, &final_path) {
         return Err(bad_upload("invalid target path"));
     }
     let predicted = st.scanner.predict_song_id(library, &final_path, &info);
@@ -440,7 +459,7 @@ async fn process_song(
     if let Some(parent) = final_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::rename(&*work, &final_path).await?;
+    move_no_clobber(work, &final_path).await?;
     let scanner = st.scanner.clone();
     let indexed = final_path.clone();
     let id = tokio::task::spawn_blocking(move || scanner.index_file(&indexed))
@@ -514,6 +533,7 @@ async fn process_cover(
     st: &AppState,
     params: &Params,
     work: &mut PathBuf,
+    library: &Library,
 ) -> Result<serde_json::Value, ApiError> {
     let key = params
         .get("albumId")
@@ -550,6 +570,9 @@ async fn process_cover(
         })
         .await?;
 
+    if !upload::contained_real(&library.path, &dir) {
+        return Err(ApiError::forbidden("album is outside its library"));
+    }
     let _guard = st.upload_lock.lock().await;
     for old_ext in ["jpg", "jpeg", "png", "webp"] {
         let _ = tokio::fs::remove_file(dir.join(format!("cover.{old_ext}"))).await;
@@ -569,6 +592,7 @@ async fn process_lyrics(
     st: &AppState,
     params: &Params,
     work: &mut PathBuf,
+    library: &Library,
 ) -> Result<serde_json::Value, ApiError> {
     let song_id = params.req("songId")?.to_string();
     let bytes = tokio::fs::read(&*work).await?;
@@ -588,6 +612,9 @@ async fn process_lyrics(
         })
         .await?;
     let song_path = Path::new(&song_path);
+    if !upload::contained_real(&library.path, song_path) {
+        return Err(ApiError::forbidden("song is outside its library"));
+    }
     let _guard = st.upload_lock.lock().await;
     for other in ["lrc", "txt"] {
         let _ = tokio::fs::remove_file(song_path.with_extension(other)).await;
@@ -688,8 +715,8 @@ pub async fn upload_song(ctx: Ctx) -> ApiResult {
         let mut work = tmp.clone();
 
         let result = match kind.as_str() {
-            "cover" => process_cover(&st, &params, &mut work).await,
-            "lyrics" => process_lyrics(&st, &params, &mut work).await,
+            "cover" => process_cover(&st, &params, &mut work, &library).await,
+            "lyrics" => process_lyrics(&st, &params, &mut work, &library).await,
             _ => match process_song(&st, &user, &params, &mut work, original, &library).await {
                 Ok((status, id)) => match song_json(&st, &user.id, &id).await {
                     Ok(song) => Ok(json!({"status": status, "song": song})),
