@@ -49,7 +49,13 @@ impl RateLimiter {
         if map.len() >= MAX_TRACKED && !map.contains_key(key) {
             map.retain(|_, b| now.duration_since(b.updated) < IDLE_BUCKET);
             if map.len() >= MAX_TRACKED {
-                return Ok(());
+                let oldest = map
+                    .iter()
+                    .min_by_key(|(_, b)| b.updated)
+                    .map(|(k, _)| k.clone());
+                if let Some(oldest) = oldest {
+                    map.remove(&oldest);
+                }
             }
         }
         let bucket = map.entry(key.to_string()).or_insert(Bucket {
@@ -86,7 +92,15 @@ impl RateLimiter {
                 started.elapsed() < FAILURE_WINDOW && *count >= MAX_FAILURES
             });
             if map.len() >= MAX_TRACKED {
-                return;
+                let oldest = map
+                    .iter()
+                    .filter(|(_, (count, _))| *count < MAX_FAILURES)
+                    .min_by_key(|(_, (_, started))| *started)
+                    .or_else(|| map.iter().min_by_key(|(_, (_, started))| *started))
+                    .map(|(k, _)| k.clone());
+                if let Some(oldest) = oldest {
+                    map.remove(&oldest);
+                }
             }
         }
         let entry = map.entry(key.to_string()).or_insert((0, Instant::now()));
@@ -170,6 +184,23 @@ mod tests {
         }
         assert!(l.allow("a").is_err());
         assert!(l.allow("b").is_ok());
+    }
+
+    #[test]
+    fn full_tables_evict_instead_of_failing_open() {
+        let l = limiter(60, 1);
+        for i in 0..MAX_TRACKED {
+            let _ = l.allow(&format!("k{i}"));
+        }
+        assert!(l.allow("newcomer").is_ok());
+        assert!(l.allow("newcomer").is_err());
+        for i in 0..MAX_TRACKED {
+            l.fail(&format!("f{i}"));
+        }
+        for _ in 0..MAX_FAILURES {
+            l.fail("attacker");
+        }
+        assert!(l.locked("attacker"));
     }
 
     #[test]
