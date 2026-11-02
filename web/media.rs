@@ -25,6 +25,22 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(k, v)| (k == name).then_some(v))
 }
 
+fn cross_site(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        return site != "same-origin";
+    }
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let authority = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    !["x-forwarded-host", "host"].iter().any(|name| {
+        headers
+            .get(*name)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|h| h.split(',').next().map(str::trim) == Some(authority))
+    })
+}
+
 fn percent_decode(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -115,11 +131,7 @@ pub async fn scrobble(
     headers: HeaderMap,
     Query(q): Query<ScrobbleQuery>,
 ) -> Response {
-    if headers
-        .get("sec-fetch-site")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v != "same-origin")
-    {
+    if cross_site(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Some(user) = session_user(&st, &headers).await else {
@@ -158,11 +170,7 @@ pub async fn event(
     headers: HeaderMap,
     Query(q): Query<EventQuery>,
 ) -> Response {
-    if headers
-        .get("sec-fetch-site")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v != "same-origin")
-    {
+    if cross_site(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Some(user) = session_user(&st, &headers).await else {
