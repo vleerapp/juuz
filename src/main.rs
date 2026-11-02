@@ -1,6 +1,11 @@
 use std::io::IsTerminal;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::server::conn::auto::Builder;
+use hyper_util::server::graceful::GracefulShutdown;
+use hyper_util::service::TowerToHyperService;
 use juuz::config::Config;
 use tracing_subscriber::EnvFilter;
 
@@ -24,17 +29,52 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding {listen}"))?;
     tracing::info!("listening on {listen}");
     let jukebox = server.state.jukebox.clone();
-    axum::serve(
-        listener,
-        server
-            .router()
-            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    serve(listener, server.router(), async move {
         shutdown().await;
         jukebox.shutdown();
     })
-    .await?;
+    .await
+}
+
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+async fn serve(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    stop: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    let mut builder = Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT);
+    let graceful = GracefulShutdown::new();
+    tokio::pin!(stop);
+    loop {
+        let (stream, peer) = tokio::select! {
+            accepted = listener.accept() => match accepted {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::warn!("accept failed: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            },
+            () = &mut stop => break,
+        };
+        let service = TowerToHyperService::new(
+            app.clone()
+                .layer(axum::Extension(axum::extract::ConnectInfo(peer))),
+        );
+        let conn = builder.serve_connection_with_upgrades(TokioIo::new(stream), service);
+        let conn = graceful.watch(conn.into_owned());
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+    }
+    drop(listener);
+    let _ = tokio::time::timeout(SHUTDOWN_GRACE, graceful.shutdown()).await;
     Ok(())
 }
 
