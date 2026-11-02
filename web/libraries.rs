@@ -126,6 +126,20 @@ async fn library_row(row: &Row, me: &User, tz: i64) -> Result<impl View> {
     })
 }
 
+const MEMBER_LIBRARY_ROOT: &str = "/libraries";
+
+fn allowed_path(cfg: &crate::config::Config, path: &std::path::Path, admin: bool) -> bool {
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    if let Ok(data) = std::fs::canonicalize(&cfg.data_dir)
+        && (path.starts_with(&data) || data.starts_with(&path))
+    {
+        return false;
+    }
+    admin || std::fs::canonicalize(MEMBER_LIBRARY_ROOT).is_ok_and(|root| path.starts_with(root))
+}
+
 #[derive(Deserialize)]
 struct CreateForm {
     name: String,
@@ -135,19 +149,16 @@ struct CreateForm {
 
 #[route(POST "/server/libraries/create")]
 async fn create_library(cx: &Cx, Form(form): Form<CreateForm>) -> Result<SeeOther> {
-    require_role(cx, User::can_library).await?;
+    let me = require_role(cx, User::can_library).await?;
     let st = state(cx);
     let writable = form.writable.is_some();
+    let path = std::path::PathBuf::from(form.path.trim());
+    if !allowed_path(&st.cfg, &path, me.admin) {
+        return Ok(back(Page::Server, Notice::LibraryPath));
+    }
     let created = st
         .db
-        .run(move |c| {
-            Ok(libraries::create(
-                c,
-                &form.name,
-                std::path::Path::new(form.path.trim()),
-                writable,
-            ))
-        })
+        .run(move |c| Ok(libraries::create(c, &form.name, &path, writable)))
         .await
         .map_err(fail)?;
     let notice = match created {
