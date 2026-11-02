@@ -35,13 +35,16 @@
   let ctx = null;
   let normNode = null;
   let volNode = null;
+  let remote = false;
+  let remoteState = null;
+  let volumeSetAt = 0;
 
   const clock = (s) => {
     if (!Number.isFinite(s) || s < 0) return "0:00";
     const m = Math.floor(s / 60);
     return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   };
-  const current = () => queue[index];
+  const current = () => (remote ? remoteSong() : queue[index]);
   const artUrl = (song, size) => `/art?id=${encodeURIComponent(song.art || song.id)}&size=${size}`;
 
   const slider = (label, step, onInput) => {
@@ -124,6 +127,7 @@
     const inner = document.createElement("div");
     inner.className = "inner";
     inner.innerHTML =
+      '<button class="ghost collapse" type="button" data-act="collapse" aria-label="minimize player">close</button>' +
       '<div class="now"><img class="cover" alt=""><span class="cover blank"></span>' +
       '<div class="text"><strong class="title"></strong><span class="meta muted"></span></div></div>' +
       '<div class="controls">' +
@@ -133,9 +137,17 @@
       "</div>" +
       '<small class="elapsed muted">0:00</small>' +
       '<small class="total muted">0:00</small>' +
-      '<div class="vol"><button class="icon" data-act="mute" aria-label="mute"></button></div>';
+      '<div class="vol"><button class="icon" data-act="mute" aria-label="mute"></button></div>' +
+      '<div class="tools">' +
+      `<button class="icon" data-act="queue" aria-label="queue">${icon("queue")}</button>` +
+      (hasRemote() ? `<button class="icon" data-act="output" aria-label="output">${icon("output")}</button>` : "") +
+      "</div>";
     const seek = slider("seek", 0.02, (v, live) => {
       seeking = live;
+      if (remote) {
+        if (!live) remoteSeek(v);
+        return;
+      }
       if (Number.isFinite(audio.duration)) audio.currentTime = v * audio.duration;
     });
     seek.el.classList.add("seek");
@@ -153,6 +165,8 @@
       total: inner.querySelector(".total"),
       toggle: inner.querySelector('[data-act="toggle"]'),
       mute: inner.querySelector('[data-act="mute"]'),
+      queue: inner.querySelector('[data-act="queue"]'),
+      output: inner.querySelector('[data-act="output"]'),
       seek,
       vol,
     };
@@ -167,6 +181,10 @@
       if (act === "toggle") toggle();
       if (act === "next") step(1);
       if (act === "previous") previous();
+      if (act === "collapse") collapsePlayer();
+      else if (!act && !bar.hasAttribute("data-expanded") && narrow.matches && e.target.closest(".now")) expandPlayer();
+      if (act === "queue") togglePanel("queue");
+      if (act === "output") togglePanel("output");
       if (act === "mute") {
         if (volume > 0) {
           beforeMute = volume;
@@ -179,8 +197,33 @@
     return bar;
   };
 
+  const narrow = window.matchMedia("(max-width: 560px)");
+  const expandPlayer = () => {
+    closePanels();
+    bar.setAttribute("data-expanded", "");
+    document.documentElement.setAttribute("data-player-open", "");
+  };
+  const collapsePlayer = () => {
+    closePanels();
+    bar?.removeAttribute("data-expanded");
+    document.documentElement.removeAttribute("data-player-open");
+  };
+  narrow.addEventListener("change", () => {
+    if (!narrow.matches) collapsePlayer();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !panel && bar?.hasAttribute("data-expanded")) collapsePlayer();
+  });
+
   const setVolume = (v, syncSlider) => {
     volume = Math.max(0, Math.min(1, v));
+    if (remote) {
+      volumeSetAt = Date.now();
+      remoteVolume(volume);
+      if (syncSlider && els.vol) els.vol.set(volume);
+      if (els.mute) els.mute.innerHTML = icon(volumeIcon(volume));
+      return;
+    }
     if (volNode) volNode.gain.setTargetAtTime(gain(volume), ctx.currentTime, 0.004);
     else audio.volume = Math.min(1, gain(volume));
     if (syncSlider && els.vol) els.vol.set(volume);
@@ -209,6 +252,7 @@
   };
 
   const render = () => {
+    if (remote) return renderRemote();
     const song = current();
     if (!song) return;
     mount();
@@ -260,7 +304,8 @@
     }).catch(() => {});
   };
 
-  const load = (at) => {
+  const load = (at, offset = 0, autoplay = true) => {
+    if (remote) return remoteLoad(at);
     if (at < 0 || at >= queue.length) return;
     closeOpen(position(), false);
     loading = true;
@@ -270,20 +315,44 @@
     graph();
     if (normNode) normNode.gain.value = normalization(queue[at].gain);
     audio.src = `/play?id=${encodeURIComponent(queue[at].id)}`;
-    audio.play().catch(() => {});
+    if (offset > 0) {
+      audio.addEventListener(
+        "loadedmetadata",
+        () => {
+          audio.currentTime = offset;
+        },
+        { once: true },
+      );
+    }
     open = queue[at];
-    emit("PLAY", open, 0, false);
+    if (autoplay) {
+      audio.play().catch(() => {});
+      emit("PLAY", open, 0, false);
+    } else {
+      paused = true;
+    }
     render();
     els.seek.set(0);
   };
 
   const toggle = () => {
+    if (remote) {
+      if (remoteState?.songs.length) remoteCmd({ action: remoteState.playing ? "stop" : "start" });
+      return;
+    }
     if (!current()) return;
     if (audio.paused) audio.play().catch(() => {});
     else audio.pause();
   };
 
   const step = (by) => {
+    if (remote) {
+      const next = (remoteState?.index ?? 0) + by;
+      if (!remoteState || next < 0) return;
+      if (next >= remoteState.songs.length) remoteCmd({ action: "stop" });
+      else remoteCmd({ action: "skip", index: next });
+      return;
+    }
     if (index + by >= queue.length) {
       audio.pause();
       return;
@@ -292,11 +361,23 @@
   };
 
   const previous = () => {
+    if (remote) {
+      if (remotePosition() > 3) remoteCmd({ action: "skip", index: remoteState.index, offset: 0 });
+      else step(-1);
+      return;
+    }
     if (audio.currentTime > 3) audio.currentTime = 0;
     else step(-1);
   };
 
   const seekBy = (seconds) => {
+    if (remote) {
+      const song = remoteSong();
+      if (!song) return;
+      const to = Math.max(0, Math.min(song.duration || 0, remotePosition() + seconds));
+      remoteCmd({ action: "skip", index: remoteState.index, offset: Math.floor(to) });
+      return;
+    }
     if (Number.isFinite(audio.duration)) {
       audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + seconds));
     }
@@ -350,6 +431,1123 @@
       load(0);
     } catch {}
   };
+
+  const hasRemote = () => document.querySelector(".screen")?.dataset.jukebox === "1";
+
+  const post = async (url, data) => {
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(data || {})) {
+      if (Array.isArray(value)) value.forEach((v) => body.append(key, v));
+      else body.append(key, String(value));
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) {
+      const failure = new Error(String(res.status));
+      failure.detail = await res
+        .json()
+        .then((body) => body.error || "")
+        .catch(() => "");
+      throw failure;
+    }
+    return res.status === 204 ? null : res.json();
+  };
+
+  const fromRemote = (s) => ({
+    id: s.id,
+    title: s.title || "unknown",
+    artist: s.artist || "",
+    album: s.album || "",
+    art: s.coverArt || "",
+    cover: !!s.coverArt,
+    gain: null,
+    duration: Number(s.duration) || 0,
+  });
+  const remoteSong = () => remoteState?.songs[remoteState.index];
+  const remotePosition = () => {
+    if (!remoteState) return 0;
+    const song = remoteSong();
+    const moved = remoteState.playing ? (Date.now() - remoteState.at) / 1000 : 0;
+    const at = (remoteState.positionMs !== undefined ? remoteState.positionMs / 1000 : remoteState.position) + moved;
+    return song?.duration ? Math.min(at, song.duration) : at;
+  };
+
+  let remotePending = 0;
+  let remoteChain = Promise.resolve();
+  const optimistic = (data) => {
+    const s = remoteState;
+    if (!s) return;
+    if (data.action === "start") s.playing = true;
+    else if (data.action === "stop") s.playing = false;
+    else if (data.action === "gain") s.gain = data.gain;
+    else if (data.action === "skip") {
+      if (data.index !== undefined) s.index = data.index;
+      s.position = data.offset ?? 0;
+      s.playing = true;
+    } else if (data.action === "set") {
+      s.songs = queue.map((song) => ({ ...song }));
+      s.index = data.index ?? 0;
+      s.position = data.offset ?? 0;
+      s.playing = data.play !== 0;
+    } else return;
+    delete s.positionMs;
+    delete s.clock;
+    s.at = Date.now();
+    renderRemote();
+    tickRemote();
+  };
+  const remoteCmd = (data) => {
+    optimistic(data);
+    remotePending += 1;
+    remoteChain = remoteChain
+      .then(() => post("/queue", data))
+      .catch(() => {})
+      .finally(() => {
+        remotePending -= 1;
+        if (remotePending) return;
+        if (pushed) applyRemote(pushed);
+        else if (!liveOpen()) fetchRemote();
+      });
+    return remoteChain;
+  };
+  const remoteLoad = (at) => {
+    if (at < 0 || at >= queue.length) return;
+    remoteCmd({ action: "set", index: at, id: queue.map((song) => song.id) });
+  };
+  const remoteSeek = (v) => {
+    const song = remoteSong();
+    if (!song || !song.duration) return;
+    remoteCmd({ action: "skip", index: remoteState.index, offset: Math.floor(v * song.duration) });
+  };
+  let gainTimer = null;
+  const remoteVolume = (v) => {
+    clearTimeout(gainTimer);
+    gainTimer = setTimeout(() => remoteCmd({ action: "gain", gain: v }), 120);
+  };
+
+  const idleBar = (meta) => {
+    mount();
+    bar.hidden = false;
+    els.title.textContent = "nothing playing";
+    els.meta.textContent = meta || "";
+    els.toggle.innerHTML = icon("play");
+    showCover(false);
+    els.elapsed.textContent = "0:00";
+    els.total.textContent = "0:00";
+    els.seek.set(0);
+  };
+
+  const renderRemote = () => {
+    const song = remoteSong();
+    if (!song) {
+      idleBar(remoteState?.output?.name);
+      markPlaying();
+      return;
+    }
+    mount();
+    bar.hidden = false;
+    els.title.textContent = song.title;
+    els.meta.textContent = song.artist;
+    els.toggle.innerHTML = icon(remoteState.playing ? "pause" : "play");
+    if (song.cover) {
+      showCover(true);
+      const src = artUrl(song, 128);
+      if (!els.art.src.endsWith(src)) els.art.src = src;
+    } else {
+      showCover(false);
+    }
+    document.title = `${song.title} - Juuz`;
+    markPlaying();
+  };
+
+  const tickRemote = () => {
+    if (!remote || !bar || !remoteState) return;
+    const song = remoteSong();
+    const at = remotePosition();
+    els.elapsed.textContent = clock(at);
+    els.total.textContent = clock(song?.duration || 0);
+    if (!seeking && song?.duration) els.seek.set(at / song.duration);
+  };
+
+  const showOutputState = () => {
+    els.output?.classList.toggle("on", remote);
+  };
+
+  const setRemote = (on) => {
+    if (on === remote) return;
+    remote = on;
+    if (on) {
+      audio.pause();
+      closeOpen(position(), false);
+    } else {
+      remoteState = null;
+      if (queue.length && current()) render();
+      else if (bar && !hasRemote()) bar.hidden = true;
+      else if (hasRemote()) idleBar("");
+    }
+    showOutputState();
+  };
+
+  const liveOpen = () => !!window.juuzLive?.open();
+  let pushed = null;
+  const applyRemote = (state) => {
+    if (!hasRemote() || remotePending) return;
+    state.at = Date.now();
+    state.songs = (state.queue || []).map(fromRemote);
+    remoteState = state;
+    setRemote(!!state.output);
+    if (remote) {
+      renderRemote();
+      if (Date.now() - volumeSetAt > 1500 && els.vol) {
+        volume = state.gain;
+        els.vol.set(volume);
+        if (els.mute) els.mute.innerHTML = icon(volumeIcon(volume));
+      }
+      tickRemote();
+    }
+    if (panel === "queue") renderQueue();
+    pcmVolumeTo(state.gain);
+  };
+  const fetchRemote = async () => {
+    if (!hasRemote()) return;
+    try {
+      const res = await fetch("/queue", { credentials: "same-origin" });
+      if (!res.ok) return;
+      pushed = null;
+      remoteState = null;
+      applyRemote(await res.json());
+    } catch {}
+  };
+
+  setInterval(tickRemote, 250);
+
+  let panel = null;
+  const node = (tag, cls, text) => {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  };
+  const panels = {};
+  const panelEl = (name) => {
+    if (!panels[name]) {
+      const el = node("div", "popup");
+      el.dataset.panel = name;
+      el.hidden = true;
+      panels[name] = el;
+    }
+    mount();
+    if (!panels[name].isConnected) bar.append(panels[name]);
+    return panels[name];
+  };
+  const closePanels = () => {
+    panel = null;
+    for (const el of Object.values(panels)) el.hidden = true;
+    for (const b of [els.queue, els.output]) b?.removeAttribute("aria-expanded");
+  };
+  const togglePanel = (name) => {
+    if (panel === name) return closePanels();
+    closePanels();
+    panel = name;
+    panelEl(name).hidden = false;
+    (name === "queue" ? els.queue : els.output)?.setAttribute("aria-expanded", "true");
+    if (name === "queue") renderQueue(true);
+    else if (outputs) renderOutputs();
+    else loadOutputs();
+  };
+  document.addEventListener("click", (e) => {
+    if (panel && bar && !bar.contains(e.target)) closePanels();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && panel) {
+      closePanels();
+      e.stopPropagation();
+    }
+  });
+
+  const item = (label, current, attrs) => {
+    const b = node("button", "item");
+    b.type = "button";
+    b.append(node("span", "name", label));
+    if (current) b.setAttribute("aria-current", "true");
+    Object.assign(b.dataset, attrs);
+    return b;
+  };
+
+  let outputs = null;
+  let draft = null;
+  const draftFrom = (combo) => ({
+    id: combo?.id || "",
+    name: combo?.name || "",
+    members: new Map((combo?.members || []).map((m) => [m.id, { name: m.name, delay: m.delayMs }])),
+    delays: new Map((combo?.members || []).map((m) => [m.id, String(m.delayMs)])),
+  });
+  const mineUdn = window.juuzBrowser.udn;
+  const SECTION = { local: "this device", group: "groups", browser: "browsers", snapcast: "snapcast", airplay: "airplay", dlna: "dlna" };
+  const glyphFor = (protocol) => (protocol in SECTION && protocol !== "local" ? protocol : "dlna");
+  const ghost = (label, attrs, cls) => {
+    const b = node("button", cls ? `ghost ${cls}` : "ghost", label);
+    b.type = "button";
+    Object.assign(b.dataset, attrs);
+    return b;
+  };
+  const tileEl = (label, glyph, attrs, { current = false, offline = false, meta = "", foot = null, extra = null, cls = "", detail = "" } = {}) => {
+    const t = node("div", cls ? `tile ${cls}` : "tile");
+    if (offline) t.setAttribute("data-offline", "");
+    const face = node("button", "face");
+    face.type = "button";
+    Object.assign(face.dataset, attrs);
+    if (current) face.setAttribute("aria-current", "true");
+    const mark = node("span", "glyph");
+    mark.innerHTML = icon(glyph);
+    if (detail) {
+      const text = node("span", "text");
+      text.append(node("span", "name", label), node("span", "detail", detail));
+      face.append(mark, text);
+    } else {
+      face.append(mark, node("span", "name", label));
+    }
+    const bottom = node("div", "foot");
+    if (foot) bottom.append(foot);
+    else bottom.append(node("span", "meta", meta));
+    t.append(face, bottom);
+    if (extra) t.append(extra);
+    return t;
+  };
+  const section = (el, key) => {
+    const label = node("div", "label", SECTION[key] || key);
+    const grid = node("div", "tiles");
+    el.append(label, grid);
+    return grid;
+  };
+  const pool = () => {
+    const found = new Map();
+    found.set(mineUdn, { name: "this browser", protocol: "browser", detail: window.juuzBrowser.info });
+    for (const group of outputs?.groups || [])
+      for (const d of group.devices) if (d.id !== mineUdn) found.set(d.id, { name: d.name, protocol: group.protocol, detail: d.detail || "" });
+    if (draft)
+      for (const [id, m] of draft.members) if (!found.has(id)) found.set(id, { name: m.name, protocol: id.split(":")[0] });
+    return found;
+  };
+  const delayField = (id) => {
+    const wrap = node("label", "delay");
+    const input = node("input");
+    input.type = "number";
+    input.step = "10";
+    input.min = "-900";
+    input.max = "3000";
+    input.placeholder = "0";
+    input.value = draft.delays.get(id) ?? "";
+    input.dataset.gdelay = id;
+    input.dataset.stepper = "1";
+    input.title = "enter to edit, up and down to change, esc to leave";
+    input.setAttribute("aria-label", "delay in ms");
+    wrap.append(input, node("span", "", "ms"));
+    return wrap;
+  };
+  const renderDraft = (el) => {
+    const head = node("div", "head editor");
+    const name = node("input", "gname");
+    name.type = "text";
+    name.maxLength = 64;
+    name.placeholder = "group name";
+    name.value = draft.name;
+    name.dataset.gname = "1";
+    head.append(name);
+    if (draft.id) head.append(ghost("delete", { grp: "remove" }));
+    head.append(ghost("done", { grp: "done" }));
+    el.append(head);
+    const byProtocol = new Map();
+    for (const [id, d] of pool()) {
+      if (!byProtocol.has(d.protocol)) byProtocol.set(d.protocol, []);
+      byProtocol.get(d.protocol).push([id, d]);
+    }
+    if (!byProtocol.size) el.append(node("div", "note muted", "no outputs to group yet"));
+    for (const [protocol, devices] of [...byProtocol].sort((x, y) => x[0].localeCompare(y[0]))) {
+      const grid = section(el, protocol);
+      for (const [id, d] of devices) {
+        const member = draft.members.get(id);
+        const tile = tileEl(d.name, glyphFor(protocol), { gcheck: id }, { foot: delayField(id), detail: d.detail || "" });
+        tile.dataset.tile = id;
+        tile.toggleAttribute("data-picked", !!member);
+        grid.append(tile);
+      }
+    }
+  };
+  let authView = null;
+  const findDevice = (id) => {
+    for (const group of outputs?.groups || []) {
+      const device = group.devices.find((d) => d.id === id);
+      if (device) return device;
+    }
+    return null;
+  };
+  const openAuth = (id) => {
+    const device = findDevice(id);
+    if (!device) return;
+    authView = { id, name: device.name, lock: device.lock || {}, step: "idle", password: "", pin: "", message: "" };
+  };
+  const renderAuth = (el) => {
+    const lock = outputs ? findDevice(authView.id)?.lock || authView.lock : authView.lock;
+    authView.lock = lock;
+    const head = node("div", "head");
+    head.append(node("strong", "", `airplay · ${authView.name}`), ghost("back", { auth: "back" }));
+    el.append(head);
+    const hint = lock.needs === "password" ? "this device needs its password" : lock.needs === "pin" ? "this device wants a pairing code" : "this device accepts any sender";
+    const status = lock.paired ? "paired with a code" : lock.configured ? "password saved" : "";
+    el.append(node("div", "note", status ? `${hint} · ${status}` : hint));
+    const form = node("div", "authform");
+    const row = (label, ...children) => {
+      const r = node("div", "authrow");
+      r.append(node("span", "label", label), ...children);
+      form.append(r);
+    };
+    const password = node("input");
+    password.type = "password";
+    password.placeholder = "password";
+    password.autocomplete = "off";
+    password.value = authView.password;
+    password.dataset.apw = "1";
+    row("password", password, ghost("save", { auth: "password" }));
+    if (authView.step === "pin") {
+      const pin = node("input");
+      pin.type = "text";
+      pin.inputMode = "numeric";
+      pin.placeholder = "code shown on the device";
+      pin.autocomplete = "off";
+      pin.value = authView.pin;
+      pin.dataset.apin = "1";
+      row("pairing code", pin, ghost("pair", { auth: "finish" }));
+    } else {
+      row("pairing code", node("span", "hint", "shows a code on the device"), ghost("start pairing", { auth: "pair" }));
+    }
+    if (lock.configured) row("saved", node("span", "hint", status), ghost("forget", { auth: "forget" }));
+    el.append(form);
+    if (authView.message) el.append(node("div", "note", authView.message));
+  };
+  const focusSelector = (node) => {
+    if (!node || node === document.body) return null;
+    const d = node.dataset;
+    if (d.out !== undefined) return `[data-out="${CSS.escape(d.out)}"]`;
+    if (d.gcheck !== undefined) return `[data-gcheck="${CSS.escape(d.gcheck)}"]`;
+    if (d.gdelay !== undefined) return `[data-gdelay="${CSS.escape(d.gdelay)}"]`;
+    if (d.gname !== undefined) return "[data-gname]";
+    if (d.grp !== undefined) return `[data-grp="${CSS.escape(d.grp)}"]${d.gid ? `[data-gid="${CSS.escape(d.gid)}"]` : ""}`;
+    if (d.auth !== undefined) return `[data-auth="${CSS.escape(d.auth)}"]${d.gid ? `[data-gid="${CSS.escape(d.gid)}"]` : ""}`;
+    return null;
+  };
+  const renderOutputs = () => {
+    const el = panelEl("output");
+    const focus = el.contains(document.activeElement) ? focusSelector(document.activeElement) : null;
+    const scroll = el.scrollTop;
+    paintOutputs(el);
+    el.scrollTop = scroll;
+    if (focus) el.querySelector(focus)?.focus({ preventScroll: true });
+  };
+  const paintOutputs = (el) => {
+    el.classList.add("outputs");
+    el.replaceChildren();
+    if (authView) {
+      renderAuth(el);
+      return;
+    }
+    if (draft) {
+      el.append(node("div", "head", draft.id ? "edit group" : "new group"));
+      if (!outputs) return;
+      renderDraft(el);
+      return;
+    }
+    const head = node("div", "head");
+    head.append(node("strong", "", "output"), ghost("scan", { out: "scan" }));
+    el.append(head);
+    if (!outputs) return;
+    const down = (current) => current && outputs.current && !outputs.current.online;
+    const here = outputs.current?.id === mineUdn || (!outputs.current && (localPicked || (!remote && !!current())));
+    const local = section(el, "local");
+    local.append(tileEl("this browser", "browser", { out: "" }, { current: here, meta: window.juuzBrowser.info }));
+    let found = 0;
+    const paintGroup = (group, into) => {
+      const devices = group.devices.filter((d) => d.id !== mineUdn);
+      if (!devices.length) return;
+      const grid = into || section(el, group.protocol);
+      for (const device of devices) {
+        if (group.protocol !== "browser") found += 1;
+        grid.append(
+          tileEl(device.name, glyphFor(group.protocol), { out: device.id }, {
+            current: device.current,
+            offline: down(device.current),
+            meta: down(device.current)
+              ? "offline"
+              : device.lock?.needs && !device.lock.configured
+                ? `${device.lock.needs} needed`
+                : device.detail || group.protocol,
+            extra: device.lock?.needs || device.lock?.configured
+              ? ghost(device.lock.needs && !device.lock.configured ? "unlock" : "auth", { auth: "open", gid: device.id }, "edit")
+              : null,
+          }),
+        );
+      }
+    };
+    const others = outputs.groups.filter((g) => g.protocol === "browser");
+    others.forEach((group) => paintGroup(group, local));
+    const groups = section(el, "group");
+    for (const combo of outputs.combos || [])
+      groups.append(
+        tileEl(combo.name, "group", { out: combo.id }, {
+          current: combo.current,
+          offline: down(combo.current),
+          meta: down(combo.current) ? "offline" : combo.members.map((m) => m.name).join(", "),
+          extra: ghost("edit", { grp: "edit", gid: combo.id }, "edit"),
+        }),
+      );
+    groups.append(tileEl("new group", "plus", { grp: "new" }, { meta: "combine outputs", cls: "add" }));
+    for (const group of [...outputs.groups].filter((g) => g.protocol !== "browser").sort((x, y) => x.protocol.localeCompare(y.protocol)))
+      paintGroup(group, null);
+    if (!found) el.append(node("div", "note muted", "no speakers found yet, scan again"));
+  };
+  let outputsSeen = "";
+  let localPicked = false;
+  const loadOutputs = async () => {
+    try {
+      const res = await fetch("/outputs", { credentials: "same-origin" });
+      if (res.ok) takeOutputs(await res.json());
+    } catch {}
+  };
+  const takeOutputs = (next) => {
+    const sig = JSON.stringify(next);
+    const changed = sig !== outputsSeen;
+    outputsSeen = sig;
+    outputs = next;
+    if (panel !== "output" || !changed) return;
+    if (draft) {
+      if (adoptRemote()) renderOutputs();
+    } else if (!authView) renderOutputs();
+  };
+
+  const adoptRemote = () => {
+    if (!draft?.id || livePending || liveJob) return false;
+    const combo = (outputs?.combos || []).find((c) => c.id === draft.id);
+    if (!combo) {
+      draft = null;
+      return true;
+    }
+    const keeping = document.activeElement;
+    const typingName = keeping?.dataset?.gname !== undefined;
+    const same =
+      (typingName || combo.name === draft.name) &&
+      combo.members.length === draft.members.size &&
+      combo.members.every((m) => {
+        const mine = draft.members.get(m.id);
+        const field = keeping?.dataset?.gdelay === m.id;
+        return mine && (field || Number(mine.delay) === m.delayMs);
+      });
+    if (same) return false;
+    if (!typingName) draft.name = combo.name;
+    const delays = new Map(draft.delays);
+    const members = new Map();
+    for (const m of combo.members) {
+      const field = keeping?.dataset?.gdelay === m.id;
+      const delay = field ? draft.delays.get(m.id) ?? String(m.delayMs) : String(m.delayMs);
+      delays.set(m.id, delay);
+      members.set(m.id, { name: m.name, delay });
+    }
+    draft.members = members;
+    draft.delays = delays;
+    return true;
+  };
+
+  let pcmCtx = null;
+  let pcmGain = null;
+  let pcmVolume = 1;
+  let pcmNext = 0;
+  let pcmSkew = 0;
+  const pcmLive = new Set();
+  const pcmEnsure = () => {
+    if (!pcmCtx) {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      try {
+        pcmCtx = new Context({ sampleRate: 48000, latencyHint: "interactive" });
+      } catch {
+        pcmCtx = new Context();
+      }
+      pcmGain = pcmCtx.createGain();
+      pcmGain.gain.value = pcmVolume;
+      pcmGain.connect(pcmCtx.destination);
+    }
+    if (pcmCtx.state !== "running") pcmCtx.resume().catch(() => {});
+    return pcmCtx;
+  };
+  const pcmFlush = () => {
+    for (const source of pcmLive) {
+      try {
+        source.stop();
+      } catch {}
+    }
+    pcmLive.clear();
+    pcmNext = 0;
+    pcmSkew = 0;
+  };
+  const pcmVolumeTo = (v) => {
+    pcmVolume = Math.min(1, gain(v ?? 1));
+    if (pcmGain) pcmGain.gain.value = pcmVolume;
+  };
+  const unlockPcm = () => {
+    pcmEnsure();
+    if (pcmCtx.state !== "running") return;
+    for (const type of ["pointerdown", "touchend", "keydown"]) document.removeEventListener(type, unlockPcm, true);
+  };
+  for (const type of ["pointerdown", "touchend", "keydown"]) document.addEventListener(type, unlockPcm, true);
+
+  window.addEventListener("juuz:pcm", (e) => {
+    const buf = e.detail;
+    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 16) return;
+    const view = new DataView(buf);
+    if (view.getUint8(0) === 2) {
+      pcmFlush();
+      return;
+    }
+    const offset = window.juuzLive?.perfOffset();
+    if (!pcmCtx || pcmCtx.state !== "running" || offset == null) {
+      pcmEnsure();
+      return;
+    }
+    const rate = view.getUint16(1, true) * 100;
+    const latencyMs = view.getInt32(4, true);
+    const dueUs = Number(view.getBigInt64(8, true));
+    const frames = (buf.byteLength - 16) >> 2;
+    if (!frames) return;
+    const heard = dueUs / 1000 + latencyMs - offset;
+    const stamp = pcmCtx.getOutputTimestamp ? pcmCtx.getOutputTimestamp() : null;
+    let at;
+    if (stamp && stamp.performanceTime > 0 && stamp.contextTime > 0) {
+      at = stamp.contextTime + (heard - stamp.performanceTime) / 1000;
+    } else {
+      const hardware = pcmCtx.outputLatency || pcmCtx.baseLatency || 0;
+      at = pcmCtx.currentTime + (heard - performance.now()) / 1000 - hardware;
+    }
+    let stretch = 1;
+    if (pcmNext && Math.abs(at - pcmNext) < 0.05) {
+      pcmSkew = pcmSkew * 0.9 + (at - pcmNext) * 0.1;
+      stretch = 1 - Math.max(-0.005, Math.min(0.005, pcmSkew * 0.25));
+      at = pcmNext;
+    } else {
+      pcmSkew = 0;
+    }
+    if (at < pcmCtx.currentTime) {
+      if (pcmCtx.currentTime - at > 0.04) {
+        pcmNext = 0;
+        return;
+      }
+      at = pcmCtx.currentTime;
+    }
+    const samples = new Int16Array(buf, 16, frames * 2);
+    const audio = pcmCtx.createBuffer(2, frames, rate);
+    const left = audio.getChannelData(0);
+    const right = audio.getChannelData(1);
+    for (let i = 0; i < frames; i++) {
+      left[i] = samples[2 * i] / 32768;
+      right[i] = samples[2 * i + 1] / 32768;
+    }
+    const source = pcmCtx.createBufferSource();
+    source.buffer = audio;
+    source.playbackRate.value = stretch;
+    source.connect(pcmGain);
+    source.onended = () => pcmLive.delete(source);
+    pcmLive.add(source);
+    source.start(at);
+    pcmNext = at + frames / rate / stretch;
+  });
+
+  window.addEventListener("juuz:push", (e) => {
+    const { t, d } = e.detail || {};
+    if (t === "queue") {
+      pushed = d;
+      applyRemote(d);
+    } else if (t === "outputs") takeOutputs(d);
+  });
+
+  const switchOutput = async (id) => {
+    let handoff = null;
+    let back = null;
+    if (!remote && id && queue.length && current()) {
+      handoff = {
+        ids: queue.map((song) => song.id),
+        index,
+        offset: Math.floor(audio.currentTime || 0),
+        play: !audio.paused,
+      };
+    }
+    if (remote && !id) {
+      await fetchRemote();
+      if (remoteState?.songs.length) {
+        back = {
+          songs: remoteState.songs,
+          index: remoteState.index,
+          offset: Math.floor(remotePosition()),
+          play: remoteState.playing,
+        };
+      }
+    }
+    const result = await post(`/output?id=${encodeURIComponent(id)}`);
+    if (handoff) {
+      audio.pause();
+      closeOpen(position(), false);
+      await post("/queue", {
+        action: "set",
+        index: handoff.index,
+        offset: handoff.offset,
+        play: handoff.play ? 1 : 0,
+        id: handoff.ids,
+      });
+      queue = [];
+      index = -1;
+    }
+    await fetchRemote();
+    if (back) {
+      queue = back.songs.map((song) => ({ ...song }));
+      index = back.index;
+      load(back.index, back.offset, back.play);
+    }
+    return result;
+  };
+
+  const queueView = () => (remote ? { songs: remoteState?.songs || [], at: remoteState?.index ?? -1 } : { songs: queue, at: index });
+  const queueAct = async (what, i, j) => {
+    if (remote) {
+      const data = { remove: { action: "remove", index: i }, move: { action: "move", from: i, to: j }, clear: { action: "clear" }, jump: { action: "skip", index: i } }[what];
+      return remoteCmd(data);
+    }
+    if (what === "jump") load(i);
+    if (what === "remove") {
+      if (i < 0 || i >= queue.length) return;
+      const wasCurrent = i === index;
+      queue.splice(i, 1);
+      if (i < index) index--;
+      if (wasCurrent) {
+        if (queue.length) load(Math.min(i, queue.length - 1));
+        else dropLocal();
+      }
+    }
+    if (what === "move") {
+      if (i < 0 || j < 0 || i >= queue.length || j >= queue.length || i === j) return;
+      const [song] = queue.splice(i, 1);
+      queue.splice(j, 0, song);
+      if (index === i) index = j;
+      else if (i < index && j >= index) index--;
+      else if (i > index && j <= index) index++;
+    }
+    if (what === "clear") {
+      queue = [];
+      dropLocal();
+    }
+    markPlaying();
+    renderQueue();
+  };
+  const dropLocal = () => {
+    closeOpen(position(), false);
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    index = -1;
+    if (hasRemote()) idleBar("");
+    else if (bar) bar.hidden = true;
+  };
+
+  let queueSeen = "";
+  const renderQueue = (force = false) => {
+    if (qdrag) return;
+    const el = panelEl("queue");
+    const view = queueView();
+    const sig = JSON.stringify(view.songs.map((song) => song.id));
+    if (!force && sig === queueSeen && el.firstElementChild) {
+      el.querySelectorAll("[data-i][aria-current]").forEach((row) => row.removeAttribute("aria-current"));
+      el.querySelector(`[data-i="${view.at}"]`)?.setAttribute("aria-current", "true");
+      return;
+    }
+    queueSeen = sig;
+    const keep = el.scrollTop;
+    const held = el.contains(document.activeElement) ? document.activeElement : null;
+    const heldQ = held?.dataset?.q;
+    const heldRow = held?.closest?.("[data-i]")?.dataset.i;
+    const { songs, at } = queueView();
+    el.replaceChildren();
+    const head = node("div", "head");
+    head.append(node("strong", "", songs.length ? `queue, ${songs.length} songs` : "queue"));
+    if (songs.length) {
+      const clear = node("button", "ghost", "clear");
+      clear.type = "button";
+      clear.dataset.q = "clear";
+      head.append(clear);
+    }
+    el.append(head);
+    if (!songs.length) {
+      el.append(node("div", "note muted", "nothing queued"));
+      return;
+    }
+    const list = node("div", "qlist");
+    const from = Math.max(0, at - 5);
+    const to = Math.min(songs.length, from + 200);
+    for (let i = from; i < to; i++) {
+      const song = songs[i];
+      const row = node("div", "qrow");
+      row.dataset.i = String(i);
+      row.dataset.q = "jump";
+      if (i === at) row.setAttribute("aria-current", "true");
+      if (song.cover) {
+        const img = node("img", "cover");
+        img.alt = "";
+        img.draggable = false;
+        img.loading = "lazy";
+        img.src = artUrl(song, 64);
+        row.append(img);
+      } else {
+        row.append(node("span", "cover blank"));
+      }
+      const text = node("div", "text");
+      text.append(node("strong", "title", song.title), node("span", "meta muted", song.artist));
+      row.append(text);
+      if (song.duration) row.append(node("small", "time muted", clock(song.duration)));
+      const b = node("button", "icon");
+      b.type = "button";
+      b.dataset.q = "remove";
+      b.setAttribute("aria-label", "remove");
+      b.innerHTML = icon("remove");
+      row.append(b);
+      list.append(row);
+    }
+    el.append(list);
+    if (to < songs.length) el.append(node("div", "note muted", `${songs.length - to} more`));
+    if (keep) el.scrollTop = keep;
+    else el.querySelector("[aria-current]")?.scrollIntoView({ block: "nearest" });
+    if (heldQ) {
+      const selector = heldRow !== undefined ? `[data-i="${heldRow}"] [data-q="${heldQ}"]` : `[data-q="${heldQ}"]`;
+      el.querySelector(selector)?.focus({ preventScroll: true });
+    }
+  };
+
+  let qpress = null;
+  let qdrag = null;
+  let qquiet = 0;
+  const qClear = () => {
+    if (qpress) clearTimeout(qpress.timer);
+    qpress = null;
+  };
+  const qPlace = () => {
+    const d = qdrag;
+    const box = d.panel.getBoundingClientRect();
+    if (d.y < box.top + 24) d.panel.scrollTop -= 10;
+    else if (d.y > box.bottom - 24) d.panel.scrollTop += 10;
+    const listTop = d.top0 - d.panel.scrollTop;
+    const centre = d.y - d.grab + d.height / 2;
+    d.over = Math.max(0, Math.min(d.rows.length - 1, Math.floor((centre - listTop) / d.pitch)));
+    d.rows.forEach((row, i) => {
+      let shift = 0;
+      if (d.from < d.over && i > d.from && i <= d.over) shift = -d.pitch;
+      if (d.from > d.over && i >= d.over && i < d.from) shift = d.pitch;
+      row.style.transform = shift ? `translateY(${shift}px)` : "";
+    });
+    d.clone.style.transform = `translateY(${d.y - d.grab}px)`;
+    d.raf = requestAnimationFrame(qPlace);
+  };
+  const beginQDrag = (row, x, y) => {
+    const panelNode = row.closest(".popup");
+    const rows = [...row.parentElement.querySelectorAll(".qrow[data-i]")];
+    const rects = rows.map((r) => r.getBoundingClientRect());
+    const box = row.getBoundingClientRect();
+    const clone = row.cloneNode(true);
+    clone.classList.add("floating");
+    Object.assign(clone.style, {
+      position: "fixed",
+      left: `${box.left}px`,
+      top: "0",
+      width: `${box.width}px`,
+      height: `${box.height}px`,
+      transform: `translateY(${box.top}px)`,
+      zIndex: "60",
+      pointerEvents: "none",
+    });
+    panelNode.append(clone);
+    row.classList.add("lifted");
+    rows.forEach((r) => r.classList.add("sliding"));
+    const from = rows.indexOf(row);
+    qdrag = {
+      row,
+      rows,
+      from,
+      over: from,
+      clone,
+      panel: panelNode,
+      y,
+      grab: y - box.top,
+      height: box.height,
+      pitch: rows.length > 1 ? rects[1].top - rects[0].top : box.height,
+      top0: rects[0].top + panelNode.scrollTop,
+      raf: 0,
+    };
+    document.documentElement.classList.add("reordering");
+    qPlace();
+  };
+  const endQDrag = (commit) => {
+    const d = qdrag;
+    if (!d) return;
+    cancelAnimationFrame(d.raf);
+    qquiet = performance.now() + 400;
+    const moved = commit && d.over !== d.from;
+    const from = Number(d.row.dataset.i);
+    const to = Number(d.rows[d.over].dataset.i);
+    d.clone.remove();
+    d.row.classList.remove("lifted");
+    d.rows.forEach((r) => {
+      r.classList.remove("sliding");
+      r.style.transform = "";
+    });
+    document.documentElement.classList.remove("reordering");
+    qdrag = null;
+    if (moved) queueAct("move", from, to);
+  };
+  document.addEventListener("pointerdown", (e) => {
+    const row = e.target.closest?.(".qrow[data-i]");
+    if (!row || qdrag || e.button > 0 || e.target.closest("button")) return;
+    qClear();
+    const touch = e.pointerType === "touch";
+    qpress = { row, x: e.clientX, y: e.clientY, touch, timer: 0 };
+    if (touch) {
+      qpress.timer = setTimeout(() => {
+        const p = qpress;
+        qpress = null;
+        if (p) beginQDrag(p.row, p.x, p.y);
+      }, 350);
+    }
+  });
+  document.addEventListener("pointermove", (e) => {
+    if (qdrag) {
+      qdrag.y = e.clientY;
+      return;
+    }
+    if (!qpress) return;
+    const far = Math.hypot(e.clientX - qpress.x, e.clientY - qpress.y);
+    if (qpress.touch) {
+      if (far > 8) qClear();
+      return;
+    }
+    if (far > 4) {
+      const p = qpress;
+      qClear();
+      beginQDrag(p.row, e.clientX, e.clientY);
+    }
+  });
+  document.addEventListener("pointerup", () => {
+    qClear();
+    endQDrag(true);
+  });
+  document.addEventListener("pointercancel", () => {
+    qClear();
+    endQDrag(false);
+  });
+  document.addEventListener(
+    "touchmove",
+    (e) => {
+      if (qdrag && e.cancelable) e.preventDefault();
+    },
+    { passive: false },
+  );
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (performance.now() < qquiet) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true,
+  );
+
+  let liveTimer = null;
+  const draftBody = (d = draft) => {
+    const members = [...d.members.entries()];
+    const data = {
+      name: d.name.trim(),
+      member: members.map(([id]) => id),
+      delay: members.map(([, m]) => Math.round(Number(m.delay) || 0)),
+    };
+    if (d.id) data.id = d.id;
+    return data;
+  };
+  let liveJob = null;
+  let liveDirty = false;
+  const adopt = (target, saved) => {
+    target.id = saved.saved;
+    if (draft !== target) return;
+    const panelNode = panelEl("output");
+    const editor = panelNode.querySelector(".head.editor");
+    if (editor && !editor.querySelector('[data-grp="remove"]')) {
+      editor.querySelector('[data-grp="done"]')?.before(ghost("delete", { grp: "remove" }));
+    }
+    const title = panelNode.querySelector(".head:not(.editor)");
+    if (title) title.textContent = "edit group";
+  };
+  let liveTarget = null;
+  let livePending = false;
+  const flushLive = (target = draft) => {
+    liveTarget = target;
+    livePending = false;
+    liveDirty = true;
+    if (liveJob) return liveJob;
+    liveJob = (async () => {
+      await null;
+      while (liveDirty) {
+        liveDirty = false;
+        const t = liveTarget;
+        if (!t || !t.name.trim() || !t.members.size) continue;
+        try {
+          const saved = await post("/group", draftBody(t));
+          if (!t.id) adopt(t, saved);
+          outputs = saved;
+        } catch {}
+      }
+      liveJob = null;
+      if (!draft && panel === "output") renderOutputs();
+    })();
+    return liveJob;
+  };
+  const pushLive = () => {
+    clearTimeout(liveTimer);
+    livePending = true;
+    liveTimer = setTimeout(() => flushLive(), 200);
+  };
+  document.addEventListener("input", (e) => {
+    if (authView && bar?.contains(e.target)) {
+      if (e.target.dataset.apw !== undefined) authView.password = e.target.value;
+      if (e.target.dataset.apin !== undefined) authView.pin = e.target.value;
+      return;
+    }
+    if (!draft || !bar?.contains(e.target)) return;
+    const t = e.target;
+    if (t.dataset.gname !== undefined) {
+      draft.name = t.value;
+      pushLive();
+    } else if (t.dataset.gdelay !== undefined) {
+      draft.delays.set(t.dataset.gdelay, t.value);
+      const m = draft.members.get(t.dataset.gdelay);
+      if (m) {
+        m.delay = t.value;
+        pushLive();
+      }
+    }
+  });
+
+  document.addEventListener("click", async (e) => {
+    const pick = e.target.closest?.("[data-gcheck]");
+    if (pick && draft && bar?.contains(pick)) {
+      e.preventDefault();
+      const id = pick.dataset.gcheck;
+      const tile = pick.closest(".tile");
+      if (draft.members.has(id)) {
+        draft.members.delete(id);
+        tile.removeAttribute("data-picked");
+      } else {
+        draft.members.set(id, { name: pool().get(id)?.name || "", delay: draft.delays.get(id) ?? 0 });
+        tile.setAttribute("data-picked", "");
+      }
+      pushLive();
+      return;
+    }
+    const grp = e.target.closest?.("[data-grp]");
+    if (grp && bar?.contains(grp)) {
+      e.preventDefault();
+      const act = grp.dataset.grp;
+      try {
+        if (act === "new") draft = draftFrom(null);
+        else if (act === "edit") draft = draftFrom((outputs?.combos || []).find((c) => c.id === grp.dataset.gid));
+        else if (act === "done") {
+          clearTimeout(liveTimer);
+          const target = draft;
+          draft = null;
+          if (livePending) flushLive(target);
+        } else if (act === "remove") {
+          clearTimeout(liveTimer);
+          await liveJob;
+          outputs = await post("/group/delete", { id: draft.id });
+          draft = null;
+        } else return;
+      } catch {}
+      renderOutputs();
+      return;
+    }
+    const auth = e.target.closest?.("[data-auth]");
+    if (auth && bar?.contains(auth)) {
+      e.preventDefault();
+      const act = auth.dataset.auth;
+      try {
+        if (act === "open") openAuth(auth.dataset.gid);
+        else if (act === "back") authView = null;
+        else if (authView) {
+          const id = authView.id;
+          authView.message = "";
+          if (act === "password") {
+            outputs = await post("/airplay", { action: "password", id, password: authView.password });
+            authView.message = authView.password ? "password saved" : "password cleared";
+            authView.password = "";
+          } else if (act === "pair") {
+            outputs = await post("/airplay", { action: "pair", id });
+            authView.step = "pin";
+            authView.message = "enter the code the device is showing";
+          } else if (act === "finish") {
+            outputs = await post("/airplay", { action: "finish", id, pin: authView.pin });
+            authView.step = "idle";
+            authView.pin = "";
+            authView.message = "paired";
+          } else if (act === "forget") {
+            outputs = await post("/airplay", { action: "forget", id });
+            authView.step = "idle";
+            authView.message = "forgotten";
+          }
+        }
+      } catch (failure) {
+        if (authView) authView.message = failure.detail || "that did not work";
+      }
+      renderOutputs();
+      return;
+    }
+    const out = e.target.closest?.("[data-out]");
+    if (out && bar?.contains(out)) {
+      e.preventDefault();
+      const locked = findDevice(out.dataset.out)?.lock;
+      if (locked?.needs && !locked.configured) {
+        openAuth(out.dataset.out);
+        renderOutputs();
+        return;
+      }
+      try {
+        if (out.dataset.out === "scan") {
+          outputs = await post("/outputs/scan");
+        } else {
+          localPicked = out.dataset.out === "";
+          outputs = await switchOutput(out.dataset.out);
+        }
+      } catch {}
+      renderOutputs();
+      return;
+    }
+    const q = e.target.closest?.("[data-q]");
+    if (q && bar?.contains(q)) {
+      e.preventDefault();
+      const i = Number(q.closest("[data-i]")?.dataset.i);
+      const what = q.dataset.q;
+      queueAct(what, i);
+    }
+  });
+
+  if (hasRemote()) {
+    mount();
+    idleBar("");
+    setVolume(volume, true);
+    fetchRemote();
+  }
 
   document.addEventListener("click", (e) => {
     const album = e.target.closest("[data-play-album]");
@@ -549,9 +1747,50 @@
       now.replaceWith(next);
       document.title = doc.title || document.title;
       history.pushState(null, "", res.url);
+      swapped = true;
       markPlaying();
     } catch {
       form.submit();
+    }
+  });
+
+  let swapped = false;
+  let navigation = 0;
+  document.addEventListener("click", async (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (!bar || bar.hidden || !bar.isConnected) return;
+    const link = e.target.closest?.("a[href]");
+    if (!link || link.target || link.hasAttribute("download") || bar.contains(link)) return;
+    const url = new URL(link.href, location.href);
+    if (url.origin !== location.origin || url.hash) return;
+    if (url.pathname === "/logout" || url.pathname === "/login") return;
+    e.preventDefault();
+    const mine = ++navigation;
+    try {
+      const res = await fetch(url, { credentials: "same-origin" });
+      const kind = res.headers.get("content-type") || "";
+      const dest = new URL(res.url);
+      if (mine !== navigation) return;
+      if (!res.ok || !kind.includes("text/html") || dest.pathname === "/login") {
+        location.href = url.href;
+        return;
+      }
+      const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+      const next = doc.querySelector(".screen");
+      const now = document.querySelector(".screen");
+      if (!next || !now || mine !== navigation) {
+        if (mine === navigation) location.href = url.href;
+        return;
+      }
+      closePanels();
+      now.replaceWith(next);
+      document.title = doc.title || document.title;
+      history.pushState(null, "", res.url);
+      swapped = true;
+      window.scrollTo(0, 0);
+      markPlaying();
+    } catch {
+      location.href = url.href;
     }
   });
 
@@ -571,13 +1810,16 @@
     const option = e.target.closest("[role=option]");
     const trigger = e.target.closest(".select-trigger");
     if (option) {
-      select.querySelector("input[type=hidden]").value = option.dataset.value;
+      const hidden = select.querySelector("input[type=hidden]");
+      const changed = hidden.value !== option.dataset.value;
+      hidden.value = option.dataset.value;
       select.querySelector(".value").textContent = option.textContent;
       select.querySelectorAll("[role=option]").forEach((o) => {
         o.setAttribute("aria-selected", o === option ? "true" : "false");
       });
       closeSelects(null);
       select.querySelector(".select-trigger").focus();
+      if (changed) hidden.dispatchEvent(new Event("change", { bubbles: true }));
     } else if (trigger) {
       const open = !select.hasAttribute("data-open");
       closeSelects(open ? select : null);
@@ -782,7 +2024,7 @@
   window.addEventListener("load", mountLists);
 
   window.addEventListener("popstate", async () => {
-    if (!current()) return;
+    if (!current() && !swapped) return;
     try {
       const res = await fetch(location.pathname + location.search, { credentials: "same-origin" });
       const doc = new DOMParser().parseFromString(await res.text(), "text/html");
@@ -792,6 +2034,7 @@
         now.replaceWith(next);
         document.title = doc.title || document.title;
         markPlaying();
+        window.dispatchEvent(new Event("juuz:navigated"));
       }
     } catch {}
   });
@@ -1024,7 +2267,7 @@
     if (drag || press?.touch) e.preventDefault();
   });
   document.addEventListener("dragstart", (e) => {
-    if (reorderRow(e.target)) e.preventDefault();
+    if (reorderRow(e.target) || e.target.closest?.(".qrow")) e.preventDefault();
   });
   document.addEventListener(
     "click",

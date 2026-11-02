@@ -25,7 +25,7 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(k, v)| (k == name).then_some(v))
 }
 
-fn cross_site(headers: &HeaderMap) -> bool {
+pub(super) fn cross_site(headers: &HeaderMap) -> bool {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         return site != "same-origin";
     }
@@ -64,7 +64,7 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn session_user(st: &AppState, headers: &HeaderMap) -> Option<User> {
+pub(super) async fn session_user(st: &AppState, headers: &HeaderMap) -> Option<User> {
     let raw = cookie(headers, super::COOKIE)?;
     let token = Token::decode(&percent_decode(raw)).ok()?;
     let key = token.hash().to_vec();
@@ -75,7 +75,7 @@ async fn session_user(st: &AppState, headers: &HeaderMap) -> Option<User> {
         .flatten()
 }
 
-fn denied() -> Response {
+pub(super) fn denied() -> Response {
     StatusCode::UNAUTHORIZED.into_response()
 }
 

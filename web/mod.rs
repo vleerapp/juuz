@@ -10,6 +10,7 @@ mod nav;
 mod notice;
 mod page;
 mod playlists;
+pub mod remote;
 
 use std::time::Duration;
 

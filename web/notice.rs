@@ -22,8 +22,6 @@ pub enum Notice {
     SelfProtected,
     ScanStarted,
     ScanBusy,
-    JukeboxScanned,
-    JukeboxFailed,
     LibraryAdded,
     LibraryUpdated,
     LibraryRemoved,
@@ -40,7 +38,7 @@ pub enum Notice {
 }
 
 impl Notice {
-    const EACH: [Notice; 33] = [
+    const EACH: [Notice; 31] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -59,8 +57,6 @@ impl Notice {
         Notice::SelfProtected,
         Notice::ScanStarted,
         Notice::ScanBusy,
-        Notice::JukeboxScanned,
-        Notice::JukeboxFailed,
         Notice::LibraryAdded,
         Notice::LibraryUpdated,
         Notice::LibraryRemoved,
@@ -96,8 +92,6 @@ impl Notice {
             Notice::SelfProtected => "self-protected",
             Notice::ScanStarted => "scan-started",
             Notice::ScanBusy => "scan-busy",
-            Notice::JukeboxScanned => "jukebox-scanned",
-            Notice::JukeboxFailed => "jukebox-failed",
             Notice::LibraryAdded => "library-added",
             Notice::LibraryUpdated => "library-updated",
             Notice::LibraryRemoved => "library-removed",
@@ -138,8 +132,6 @@ impl Notice {
             Notice::SelfProtected => "you cannot demote or delete your own account",
             Notice::ScanStarted => "scan started",
             Notice::ScanBusy => "a scan is already running",
-            Notice::JukeboxScanned => "renderer scan finished",
-            Notice::JukeboxFailed => "could not use that renderer",
             Notice::LibraryAdded => "library added, scanning it now",
             Notice::LibraryUpdated => "library updated",
             Notice::LibraryRemoved => "library removed",
@@ -168,7 +160,6 @@ impl Notice {
                 | Notice::UserExists
                 | Notice::SelfProtected
                 | Notice::ScanBusy
-                | Notice::JukeboxFailed
                 | Notice::LibraryPath
                 | Notice::LibraryOverlap
                 | Notice::LibraryExists

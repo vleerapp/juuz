@@ -293,8 +293,6 @@ async fn granted_roles_open_matching_pages_only() {
 
     let scan = post(&h, "/server/scan", Some(&sam), "").await;
     assert_ne!(location(&scan), "/?n=forbidden");
-    let select = post(&h, "/server/jukebox/select", Some(&sam), "id=x").await;
-    assert_eq!(location(&select), "/?n=forbidden");
     let users = page(&h, "/users", Some(&sam)).await;
     assert_eq!(location(&users), "/?n=forbidden");
 }
@@ -590,8 +588,170 @@ async fn live_regions_and_events_need_a_session() {
     assert!(dash.contains("data-live=\"stats\""));
     let server = page(&h, "/server", Some(&session)).await.text();
     assert!(server.contains("data-live=\"scan\""));
-    assert!(server.contains("jukebox output"));
-    assert!(server.contains("none selected"));
+    assert!(!server.contains("jukebox output"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn player_bar_picks_outputs_and_manages_the_queue() {
+    let h = Harness::build(None, |c| c.snapcast_port = 0);
+    h.ok(
+        "createUser",
+        "username=bob&password=bobpw&jukeboxRole=false",
+    )
+    .await;
+    h.ok("createUser", "username=eve&password=evepw").await;
+    let admin = login(&h, USER, PASS).await;
+    let bob = login(&h, "bob", "bobpw").await;
+
+    assert_eq!(
+        page(&h, "/outputs", None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        page(&h, "/outputs", Some(&bob)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(&h, "/output?id=snapcast:aa:bb", Some(&bob), "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        page(&h, "/", Some(&bob))
+            .await
+            .text()
+            .contains("data-jukebox=\"\"")
+    );
+    assert!(
+        page(&h, "/", Some(&admin))
+            .await
+            .text()
+            .contains("data-jukebox=\"1\"")
+    );
+
+    let _speaker = speaker(&h, "aa:bb", "kitchen");
+    let listed = loop {
+        let v: serde_json::Value =
+            serde_json::from_slice(&page(&h, "/outputs", Some(&admin)).await.body).unwrap();
+        if !v["groups"].as_array().unwrap().is_empty() {
+            break v;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert!(listed["current"].is_null());
+    let groups = listed["groups"].as_array().unwrap();
+    assert!(groups.iter().any(|g| g["protocol"] == "snapcast"));
+
+    let picked = post(&h, "/output?id=snapcast:aa:bb", Some(&admin), "").await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text());
+    let picked: serde_json::Value = serde_json::from_slice(&picked.body).unwrap();
+    assert_eq!(picked["current"]["id"], "snapcast:aa:bb");
+
+    for (i, name) in ["One", "Two", "Three"].iter().enumerate() {
+        make_track(
+            &h.root(),
+            &format!("Band/Album/0{} - {name}.wav", i + 1),
+            i as u32 + 1,
+            &Tags {
+                title: Some(name),
+                artist: Some("Band"),
+                album: Some("Album"),
+                track: Some(i as u32 + 1),
+                ..Tags::default()
+            },
+        );
+    }
+    h.scan().await;
+    let songs = h.ok("getRandomSongs", "size=10").await;
+    let mut ids: Vec<(String, String)> = songs["randomSongs"]["song"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["title"].as_str().unwrap().to_string(),
+                s["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    ids.sort();
+    let body = ids
+        .iter()
+        .map(|(_, id)| format!("id={id}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let set = post(
+        &h,
+        "/queue",
+        Some(&admin),
+        &format!("action=set&index=1&{body}"),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::NO_CONTENT, "{}", set.text());
+
+    let state = |raw: Raw| serde_json::from_slice::<serde_json::Value>(&raw.body).unwrap();
+    let now = state(page(&h, "/queue", Some(&admin)).await);
+    assert_eq!(now["index"], 1);
+    assert_eq!(now["playing"], true);
+    assert_eq!(now["queue"].as_array().unwrap().len(), 3);
+    assert_eq!(now["queue"][0]["title"], "One");
+    assert!(now["positionMs"].is_u64());
+
+    let mut clock = serde_json::Value::Null;
+    for _ in 0..40 {
+        let v = state(page(&h, "/queue", Some(&admin)).await);
+        if !v["clock"].is_null() {
+            clock = v["clock"].clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(clock["pos"].as_f64().unwrap() >= 0.0, "{clock}");
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as f64;
+    assert!(
+        (clock["atUs"].as_f64().unwrap() - wall).abs() < 5e6,
+        "{clock}"
+    );
+
+    assert_eq!(
+        post(&h, "/queue", Some(&admin), "action=move&from=0&to=2")
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let moved = state(page(&h, "/queue", Some(&admin)).await);
+    assert_eq!(moved["queue"][2]["title"], "One");
+    assert_eq!(moved["queue"][0]["title"], "Three");
+    assert_eq!(moved["index"], 0);
+
+    assert_eq!(
+        post(&h, "/queue", Some(&admin), "action=remove&index=2")
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        state(page(&h, "/queue", Some(&admin)).await)["queue"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        post(&h, "/queue", Some(&admin), "action=clear")
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let empty = state(page(&h, "/queue", Some(&admin)).await);
+    assert!(empty["queue"].as_array().unwrap().is_empty());
+
+    let cleared = post(&h, "/output", Some(&admin), "").await;
+    assert_eq!(cleared.status, StatusCode::OK);
 }
 
 async fn connect(
@@ -601,8 +761,19 @@ async fn connect(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     tokio_tungstenite::tungstenite::Error,
 > {
+    connect_to(addr, "/events", session).await
+}
+
+async fn connect_to(
+    addr: std::net::SocketAddr,
+    path: &str,
+    session: Option<&str>,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::tungstenite::Error,
+> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let mut req = format!("ws://{addr}/events").into_client_request().unwrap();
+    let mut req = format!("ws://{addr}{path}").into_client_request().unwrap();
     if let Some(cookie) = session {
         req.headers_mut()
             .insert(header::COOKIE, cookie.parse().unwrap());
@@ -639,23 +810,40 @@ async fn websocket_pushes_instantly_when_a_play_is_recorded() {
     assert!(connect(addr, None).await.is_err());
 
     let mut socket = connect(addr, Some(&session)).await.expect("handshake");
+    let next = async |socket: &mut tokio_tungstenite::WebSocketStream<_>| {
+        tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await
+            .expect("push in time")
+            .expect("open")
+            .expect("frame")
+            .into_text()
+            .unwrap()
+            .to_string()
+    };
+    let queue: serde_json::Value = serde_json::from_str(&next(&mut socket).await).unwrap();
+    assert_eq!(queue["t"], "queue");
+    assert!(queue["d"]["queue"].is_array());
+    let outputs: serde_json::Value = serde_json::from_str(&next(&mut socket).await).unwrap();
+    assert_eq!(outputs["t"], "outputs");
+    assert!(outputs["d"]["groups"].is_array());
+
     let started = std::time::Instant::now();
     h.ok("scrobble", &format!("id={id}")).await;
-    let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
-        .await
-        .expect("push in time")
-        .expect("open")
-        .expect("frame");
-    assert_eq!(message.into_text().unwrap().as_str(), "pulse");
+    assert_eq!(next(&mut socket).await, "pulse");
     assert!(started.elapsed() < std::time::Duration::from_millis(1500));
 
     h.ok("scrobble", &format!("id={id}&submission=false")).await;
-    let again = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+    assert_eq!(next(&mut socket).await, "pulse");
+
+    use futures_util::SinkExt;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::text("sync:42.5"))
         .await
-        .expect("second push")
-        .expect("open")
-        .expect("frame");
-    assert_eq!(again.into_text().unwrap().as_str(), "pulse");
+        .unwrap();
+    let reply: serde_json::Value = serde_json::from_str(&next(&mut socket).await).unwrap();
+    assert_eq!(reply["t"], "sync");
+    assert_eq!(reply["c"], "42.5");
+    assert!(reply["s"].as_f64().unwrap() > 1.0e12);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1974,4 +2162,191 @@ async fn search_is_fuzzy_and_spans_title_artist_and_album() {
         artists.contains("Queen") && !artists.contains("Daft Punk"),
         "{artists}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_browser_session_is_an_output_for_its_own_user_only() {
+    let h = Harness::build(None, |c| c.snapcast_port = 0);
+    h.ok("createUser", "username=eve&password=evepw&jukeboxRole=true")
+        .await;
+    let admin = login(&h, USER, PASS).await;
+    let eve = login(&h, "eve", "evepw").await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = h.server.router();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let listed = async |session: &str| -> serde_json::Value {
+        serde_json::from_slice(&page(&h, "/outputs", Some(session)).await.body).unwrap()
+    };
+    let browsers = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+        v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|g| g["protocol"] == "browser")
+            .flat_map(|g| g["devices"].as_array().unwrap().clone())
+            .collect()
+    };
+
+    assert!(browsers(&listed(&admin).await).is_empty());
+    let socket = connect_to(
+        addr,
+        "/events?b=firefox-a1b2c3&d=Linux%2C%20Firefox&k=desktop",
+        Some(&admin),
+    )
+    .await
+    .expect("handshake");
+
+    let mine = browsers(&listed(&admin).await);
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0]["id"], "browser:firefox-a1b2c3");
+    assert_eq!(mine[0]["name"], "desktop");
+    assert_eq!(mine[0]["detail"], "Linux, Firefox");
+    assert!(browsers(&listed(&eve).await).is_empty());
+
+    assert_eq!(
+        post(&h, "/output?id=browser:firefox-a1b2c3", Some(&eve), "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let theirs = h
+        .call("juuzSetJukeboxOutput", "id=browser:firefox-a1b2c3")
+        .await;
+    assert_eq!(theirs["status"], "failed");
+
+    let picked = post(&h, "/output?id=browser:firefox-a1b2c3", Some(&admin), "").await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text());
+    let picked: serde_json::Value = serde_json::from_slice(&picked.body).unwrap();
+    assert_eq!(picked["current"]["id"], "browser:firefox-a1b2c3");
+    assert_eq!(picked["current"]["protocol"], "browser");
+
+    let mut socket = socket;
+    socket.close(None).await.unwrap();
+    for _ in 0..40 {
+        if browsers(&listed(&admin).await).is_empty() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("a closed browser must leave the list");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_output_receives_timed_pcm_over_its_socket() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let h = Harness::build(None, |c| c.snapcast_port = 0);
+    let tags = Tags {
+        title: Some("Wave"),
+        artist: Some("Band"),
+        album: Some("Album"),
+        track: Some(1),
+        ..Default::default()
+    };
+    make_track(h.music.path(), "Band/Album/01.wav", 7, &tags);
+    assert_eq!(h.scan().await, 1);
+    let found = h.ok("search3", "query=Wave").await;
+    let id = found["searchResult3"]["song"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let admin = login(&h, USER, PASS).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = h.server.router();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut socket = connect_to(
+        addr,
+        "/events?b=firefox-a1b2c3&d=Linux%2C%20Firefox&k=desktop",
+        Some(&admin),
+    )
+    .await
+    .expect("handshake");
+
+    let picked = post(&h, "/output?id=browser:firefox-a1b2c3", Some(&admin), "").await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text());
+    let set = post(
+        &h,
+        "/queue",
+        Some(&admin),
+        &format!("action=set&index=0&id={id}"),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::NO_CONTENT, "{}", set.text());
+
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match socket.next().await.expect("open").expect("frame") {
+                Message::Binary(bytes) => break bytes,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("pcm in time");
+    assert_eq!(frame[0], 1);
+    assert_eq!(
+        u16::from_le_bytes([frame[1], frame[2]]) as u32 * 100,
+        juuz::pcm::RATE
+    );
+    assert_eq!(i32::from_le_bytes(frame[4..8].try_into().unwrap()), 500);
+    let due = i64::from_le_bytes(frame[8..16].try_into().unwrap()) as f64;
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as f64;
+    assert!((due - wall).abs() < 5e6);
+    assert_eq!((frame.len() - 16) % 4, 0);
+    assert!(frame.len() > 16);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_open_page_hears_about_an_output_change() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let h = Harness::build(None, |c| c.snapcast_port = 0);
+    let admin = login(&h, USER, PASS).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = h.server.router();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut first = connect_to(addr, "/events?b=firefox-aaaaaa&k=desktop", Some(&admin))
+        .await
+        .unwrap();
+    let mut second = connect_to(addr, "/events?b=chrome-bbbbbb&k=phone", Some(&admin))
+        .await
+        .unwrap();
+
+    let current = async |socket: &mut tokio_tungstenite::WebSocketStream<_>, want: &str| {
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let Message::Text(text) = socket.next().await.expect("open").expect("frame") else {
+                    continue;
+                };
+                let v: serde_json::Value = serde_json::from_str(text.as_str()).unwrap_or_default();
+                if v["t"] == "outputs" && v["d"]["current"]["id"] == want {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(seen.is_ok(), "no outputs frame for {want}");
+    };
+
+    let picked = post(&h, "/output?id=browser:chrome-bbbbbb", Some(&admin), "").await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text());
+    current(&mut first, "browser:chrome-bbbbbb").await;
+    current(&mut second, "browser:chrome-bbbbbb").await;
 }

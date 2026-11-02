@@ -94,12 +94,11 @@ async fn library_row(row: &Row, me: &User, tz: i64) -> Result<impl View> {
                     }
                 </p>
                 if me.can_library() {
-                    <form method="post" action="/server/libraries/update">
+                    <form method="post" action="/server/libraries/update" data-auto="">
                         <input type="hidden" name="id" value=(id.as_str())>
                         field(label: "name", name: "name", kind: "text", auto: "off", value: library.name.as_str(), required: true)
                         field(label: "rescan every (minutes, 0 = never)", name: "minutes", kind: "text", auto: "off", mode: "numeric", value: minutes.as_str())
                         check(name: "writable", label: "uploads allowed", checked: library.writable)
-                        <button>"save"</button>
                     </form>
                 }
                 if me.can_scan() {

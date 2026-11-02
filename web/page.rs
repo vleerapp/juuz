@@ -70,7 +70,6 @@ struct ServerBoard {
     libraries: Vec<super::libraries::Row>,
     scan: Scan,
     config: Vec<(&'static str, String)>,
-    jukebox: crate::jukebox::Outputs,
     tz: i64,
 }
 
@@ -349,7 +348,6 @@ async fn server_page(cx: &Cx) -> Result<impl View> {
             last_scan: status.last_scan,
         },
         config: config_rows(cx),
-        jukebox: state(cx).jukebox.outputs().await,
         tz: timezone(cx),
     };
     Ok(view! { server_view(board: board, notice: notice) })
@@ -564,12 +562,17 @@ pub(super) async fn shell(
     #[default] child: Child<'_>,
 ) -> Result<impl View> {
     let authed = !name.is_empty();
+    let remote = if me.as_ref().is_some_and(|u| u.jukebox || u.admin) {
+        "1"
+    } else {
+        ""
+    };
     let pages: Vec<Page> = me
         .as_ref()
         .map(|u| Page::EACH.into_iter().filter(|p| p.visible(u)).collect())
         .unwrap_or_default();
     Ok(view! {
-        <div class=(class!("screen", "guest" if !authed))>
+        <div class=(class!("screen", "guest" if !authed)) data-jukebox=(remote)>
             <header>
                 <h1><img src=(format!("/logo.svg?v={:x}", logo_version())) alt="juuz"></h1>
                 if authed {
@@ -903,11 +906,10 @@ async fn account_view(board: AccountBoard, notice: Option<Notice>) -> Result<imp
             notice: notice,
             panel(
                 title: "profile",
-                <form method="post" action="/account/profile">
+                <form method="post" action="/account/profile" data-auto="">
                     field(label: "username", name: "username", kind: "text", auto: "username", value: board.me.name.as_str(), required: true)
                     field(label: "max bitrate (kbps, 0 = unlimited)", name: "max_bit_rate", kind: "text", auto: "off", value: rate.as_str(), mode: "numeric")
                     check(name: "scrobbling", label: "record my plays", checked: board.me.scrobbling)
-                    <button>"save"</button>
                 </form>
             )
             panel(
@@ -1026,39 +1028,6 @@ async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl 
                     </dl>
                 )
             }
-            if board.me.can_server() {
-                panel(
-                    title: "jukebox output",
-                    note: "dlna renderer",
-                    <p class="muted" data-live="jukebox">
-                        match &board.jukebox.current {
-                            Some((device, online)) => {
-                                (device.name.as_str())
-                                if !*online { ", offline" }
-                            },
-                            None => "none selected",
-                        }
-                    </p>
-                    for device in board.jukebox.devices.iter() {
-                        <form method="post" action="/server/jukebox/select">
-                            <input type="hidden" name="id" value=(device.udn.as_str())>
-                            <button>"use " (device.name.as_str())</button>
-                        </form>
-                    }
-                    <form method="post" action="/server/jukebox/scan">
-                        <button>"scan network"</button>
-                    </form>
-                    <form method="post" action="/server/jukebox/select">
-                        field(label: "device description url", name: "url", kind: "url", auto: "off")
-                        <button>"use url"</button>
-                    </form>
-                    if board.jukebox.current.is_some() {
-                        <form method="post" action="/server/jukebox/select">
-                            <button class="ghost danger">"clear output"</button>
-                        </form>
-                    }
-                )
-            }
             if board.me.can_scan() {
                 panel(
                     title: "library scan",
@@ -1120,7 +1089,7 @@ async fn member_row(
                 <small>(member.plays) " plays"</small>
             </summary>
             <div class="fold">
-                <form method="post" action="/users/update">
+                <form method="post" action="/users/update" data-auto="">
                     <input type="hidden" name="username" value=(user.name.as_str())>
                     <div class="roles">
                         for (role, label, on) in flags(user) {
@@ -1129,9 +1098,8 @@ async fn member_row(
                     </div>
                     if own { <input type="hidden" name="admin" value="on"> }
                     field(label: "new password (optional)", name: "password", kind: "password", auto: "new-password")
-                    <button>"save"</button>
                 </form>
-                <form method="post" action="/users/libraries">
+                <form method="post" action="/users/libraries" data-auto="">
                     <input type="hidden" name="username" value=(user.name.as_str())>
                     <div class="roles">
                         for (key, _, label, on, _) in choices.iter() {
@@ -1142,7 +1110,6 @@ async fn member_row(
                         <span class="caption">"upload library"</span>
                         dropdown(name: "upload", current: current_upload.as_str(), options: &options)
                     </div>
-                    <button>"save libraries"</button>
                 </form>
                 if !own {
                     <form method="post" action="/users/delete">
