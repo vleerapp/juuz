@@ -115,7 +115,7 @@ async fn library_row(row: &Row, me: &User, tz: i64) -> Result<impl View> {
                     </form>
                 }
                 if me.admin && library.id != libraries::DEFAULT_ID {
-                    <form method="post" action="/server/libraries/delete">
+                    <form method="post" action="/server/libraries/delete" data-confirm="">
                         <input type="hidden" name="id" value=(id.as_str())>
                         <button class="ghost danger">"remove library"</button>
                     </form>
