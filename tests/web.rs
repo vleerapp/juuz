@@ -1185,7 +1185,7 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
     assert_eq!(listing.status, StatusCode::OK);
     let html = listing.text();
     assert!(html.contains("Digital Love"));
-    assert!(html.contains("1 songs, 0 with metadata"), "{html}");
+    assert!(html.contains("3 items, 0 with metadata"), "{html}");
     assert!(html.contains("data-swap=\"results\""));
     assert!(html.contains("data-search"));
 
@@ -1206,23 +1206,28 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
         &h,
         "/library/pick",
         Some(&cat),
-        &format!("id={song}&omm=omm:song:1234567890"),
+        &format!("id={song}&omm=1234567890"),
     )
     .await;
     assert_eq!(location(&picked), "/library?n=catalogue-matched");
     let matched = page(&h, "/library?view=songs&status=matched", Some(&cat))
         .await
         .text();
-    assert!(matched.contains("omm:song:1234567890"));
+    assert!(matched.contains(">1234567890<"), "{matched}");
+    assert!(!matched.contains("omm:song:1234567890"));
     let song_json = h.ok("getSong", &format!("id={song}")).await;
     assert_eq!(song_json["song"]["ommId"], "omm:song:1234567890");
 
     let cleared = post(&h, "/library/clear", Some(&cat), &format!("id={song}")).await;
     assert_eq!(location(&cleared), "/library?n=catalogue-cleared");
+    let wiped = h.ok("getSong", &format!("id={song}")).await["song"].clone();
+    assert!(wiped.get("ommId").is_none(), "{wiped}");
+    assert!(wiped.get("year").is_none(), "{wiped}");
+    assert!(wiped.get("genre").is_none(), "{wiped}");
     let after = page(&h, "/library?view=songs&status=matched", Some(&cat))
         .await
         .text();
-    assert!(!after.contains("omm:song:1234567890"));
+    assert!(!after.contains("1234567890"));
     let denied = post(
         &h,
         "/library/pick",
@@ -2349,4 +2354,177 @@ async fn every_open_page_hears_about_an_output_change() {
     assert_eq!(picked.status, StatusCode::OK, "{}", picked.text());
     current(&mut first, "browser:chrome-bbbbbb").await;
     current(&mut second, "browser:chrome-bbbbbb").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn catalogue_lets_albums_and_artists_be_matched_by_hand() {
+    let album = r#"{"data":{"id":"omm:album:2345678901","type":"album","attributes":{"name":"Discovery","artistNames":["Daft Punk"],"upc":"724384960650","label":"Virgin","releaseDate":"2001-03-12"}}}"#;
+    let artist = r#"{"data":{"id":"omm:artist:3456789012","type":"artist","attributes":{"name":"Daft Punk"}}}"#;
+    let album_inner = &album[r#"{"data":"#.len()..album.len() - 1];
+    let artist_inner = &artist[r#"{"data":"#.len()..artist.len() - 1];
+    let mock = mock_omm(vec![
+        route(
+            "/search/album",
+            200,
+            format!(r#"{{"data":[{album_inner}]}}"#),
+        ),
+        route(
+            "/search/artist",
+            200,
+            format!(r#"{{"data":[{artist_inner}]}}"#),
+        ),
+        route("/catalog/omm:album:2345678901", 200, album),
+        route("/catalog/omm:artist:3456789012", 200, artist),
+    ]);
+    let h = Harness::with_omm(Some(mock.url.clone()));
+    make_track(
+        h.music.path(),
+        "Daft Punk/Discovery/03 - Digital Love.wav",
+        93,
+        &Tags {
+            title: Some("Digital Love"),
+            artist: Some("Daft Punk"),
+            album: Some("Discovery"),
+            track: Some(3),
+            ..Default::default()
+        },
+    );
+    h.scan().await;
+    let found = h.ok("search3", "query=digital").await["searchResult3"].clone();
+    let album_id = found["song"][0]["albumId"].as_str().unwrap().to_string();
+    let artist_id = found["song"][0]["artistId"].as_str().unwrap().to_string();
+    h.ok("createUser", "username=bob&password=bobpw").await;
+    let bob = login(&h, "bob", "bobpw").await;
+    let admin = login(&h, USER, PASS).await;
+
+    let blocked = page(
+        &h,
+        &format!("/library/candidates/album?id={album_id}"),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(location(&blocked), "/?n=forbidden");
+
+    let albums = page(
+        &h,
+        &format!("/library/candidates/album?id={album_id}"),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(albums.status, StatusCode::OK);
+    assert!(albums.text().contains("2345678901"));
+    let artists = page(
+        &h,
+        &format!("/library/candidates/artist?id={artist_id}"),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(artists.status, StatusCode::OK);
+    assert!(artists.text().contains("3456789012"));
+
+    let bad = post(
+        &h,
+        "/library/pick/album",
+        Some(&admin),
+        &format!("id={album_id}&omm=omm:artist:3456789012"),
+    )
+    .await;
+    assert_eq!(location(&bad), "/library?n=invalid");
+    for (route, id, omm) in [
+        ("/library/pick/album", &album_id, "2345678901"),
+        ("/library/pick/artist", &artist_id, "omm:artist:3456789012"),
+    ] {
+        let r = post(&h, route, Some(&admin), &format!("id={id}&omm={omm}")).await;
+        assert_eq!(location(&r), "/library?n=catalogue-matched");
+    }
+    let page_html = page(
+        &h,
+        &format!("/library/candidates/album?id={album_id}"),
+        Some(&admin),
+    )
+    .await
+    .text();
+    assert!(page_html.contains("matched: 2345678901"), "{page_html}");
+    let filled = h.ok("getAlbum", &format!("id={album_id}")).await["album"].clone();
+    assert_eq!(filled["year"], 2001, "{filled}");
+
+    for (route, id) in [
+        ("/library/clear/album", &album_id),
+        ("/library/clear/artist", &artist_id),
+    ] {
+        let r = post(&h, route, Some(&admin), &format!("id={id}")).await;
+        assert_eq!(location(&r), "/library?n=catalogue-cleared");
+    }
+    let after = page(
+        &h,
+        &format!("/library/candidates/album?id={album_id}"),
+        Some(&admin),
+    )
+    .await
+    .text();
+    assert!(after.contains("not matched"));
+    let wiped = h.ok("getAlbum", &format!("id={album_id}")).await["album"].clone();
+    assert!(wiped.get("ommId").is_none(), "{wiped}");
+    assert!(wiped.get("year").is_none(), "{wiped}");
+    assert!(wiped.get("label").is_none(), "{wiped}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refetch_all_metadata_needs_the_catalogue_role() {
+    let mock = mock_omm(vec![]);
+    let h = Harness::with_omm(Some(mock.url.clone()));
+    h.ok("createUser", "username=bob&password=bobpw").await;
+    let bob = login(&h, "bob", "bobpw").await;
+    let admin = login(&h, USER, PASS).await;
+    let denied = post(&h, "/server/metadata/refetch", Some(&bob), "").await;
+    assert_eq!(location(&denied), "/?n=forbidden");
+    let started = post(&h, "/server/metadata/refetch", Some(&admin), "").await;
+    assert_eq!(location(&started), "/server?n=metadata-refetch");
+    let html = page(&h, "/server", Some(&admin)).await.text();
+    assert!(html.contains("refetch all metadata"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_library_with_songs_in_use_works() {
+    let h = Harness::new();
+    let extra = tempfile::tempdir().unwrap();
+    let admin = login(&h, USER, PASS).await;
+    let body = format!("name=Family&path={}&writable=on", extra.path().display());
+    post(&h, "/server/libraries/create", Some(&admin), &body).await;
+    make_track(
+        extra.path(),
+        "A/B/01 - One.wav",
+        71,
+        &Tags {
+            title: Some("One"),
+            artist: Some("Artist"),
+            album: Some("Album"),
+            track: Some(1),
+            ..Default::default()
+        },
+    );
+    h.scan().await;
+    let found = h.ok("search3", "query=One").await["searchResult3"].clone();
+    let song = found["song"][0]["id"].as_str().unwrap().to_string();
+    let folders = h.ok("getMusicFolders", "").await["musicFolders"]["musicFolder"].clone();
+    let id = folders[1]["id"].as_i64().unwrap();
+    h.ok("createPlaylist", &format!("name=mine&songId={song}"))
+        .await;
+    h.ok("star", &format!("id={song}")).await;
+    h.ok("scrobble", &format!("id={song}")).await;
+    let removed = post(
+        &h,
+        "/server/libraries/delete",
+        Some(&admin),
+        &format!("id={id}"),
+    )
+    .await;
+    assert_eq!(
+        location(&removed),
+        "/server?n=library-removed",
+        "{}",
+        removed.text()
+    );
+    let after = h.ok("getMusicFolders", "").await["musicFolders"]["musicFolder"].clone();
+    assert_eq!(after.as_array().unwrap().len(), 1);
 }

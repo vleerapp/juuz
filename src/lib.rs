@@ -121,7 +121,7 @@ pub fn init(mut cfg: Config) -> Result<Server> {
 
     let (omm_client, omm_handle) = if cfg.omm.enabled {
         let client = Arc::new(omm::Client::new(&cfg.omm));
-        let handle = omm::spawn(db.clone(), client.clone(), cfg.omm_art_dir());
+        let handle = omm::spawn(db.clone(), client.clone(), cfg.omm_art_dir(), live.clone());
         tracing::info!("omm enrichment enabled ({})", cfg.omm.base_url);
         (Some(client), Some(handle))
     } else {

@@ -647,11 +647,12 @@ pub(super) async fn field(
     #[default] mode: &str,
     #[default] required: bool,
     #[default] focus: bool,
+    #[default] placeholder: &str,
 ) -> Result<impl View> {
     Ok(view! {
         <label>
             <span class="caption">(label)</span>
-            <input name=(name) type=(kind) autocomplete=(auto) value=(value) inputmode=(mode) required=(required) autofocus=(focus)>
+            <input name=(name) type=(kind) autocomplete=(auto) value=(value) inputmode=(mode) required=(required) autofocus=(focus) placeholder=(placeholder)>
         </label>
     })
 }
@@ -1031,7 +1032,7 @@ async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl 
             if board.me.can_scan() {
                 panel(
                     title: "library scan",
-                    <p class="muted" data-live="scan">
+                    <p class="muted" data-live="scan" data-topic="3">
                         if board.scan.scanning { "scanning, " (board.scan.count) " songs so far" }
                         else {
                             (board.scan.count) " songs"
@@ -1044,6 +1045,15 @@ async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl 
                     <form method="post" action="/server/scan">
                         check(name: "full", label: "full rescan")
                         <button>"start scan"</button>
+                    </form>
+                )
+            }
+            if board.me.can_catalogue() {
+                panel(
+                    title: "metadata",
+                    <p class="muted">"refetches every matched song, album and artist and retries unmatched ones. manual clears stay cleared."</p>
+                    <form method="post" action="/server/metadata/refetch">
+                        <button>"refetch all metadata"</button>
                     </form>
                 )
             }

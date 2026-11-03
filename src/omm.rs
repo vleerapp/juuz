@@ -24,6 +24,7 @@ const MAX_IMAGE_BYTES: u64 = 15 * 1024 * 1024;
 const ART_RETRY_SECS: i64 = 7 * 24 * 3600;
 const LOOKUP_THREADS: usize = 4;
 const UNRESOLVED_RETRY_SECS: i64 = 14 * 24 * 3600;
+const NEVER_RETRY: i64 = i64::MAX;
 const DURATION_TOLERANCE_MS: i64 = 5_000;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -80,6 +81,7 @@ pub struct AlbumRes {
 #[serde(rename_all = "camelCase", default)]
 pub struct AlbumAttrs {
     pub name: String,
+    pub track_count: Option<i64>,
     pub upc: Option<String>,
     pub label: Option<String>,
     pub release_date: Option<String>,
@@ -98,6 +100,7 @@ pub struct ArtistRes {
 #[serde(rename_all = "camelCase", default)]
 pub struct ArtistAttrs {
     pub name: String,
+    pub genres: Vec<String>,
     pub artwork_url: Option<String>,
 }
 
@@ -214,6 +217,23 @@ fn lookup_chunks(values: &[String]) -> Vec<String> {
         chunks.push(current);
     }
     chunks
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Scope<'a> {
+    pub artist_id: Option<&'a str>,
+    pub album_id: Option<&'a str>,
+}
+
+impl<'a> Scope<'a> {
+    fn push(&self, q: &mut Vec<(&'static str, &'a str)>) {
+        if let Some(id) = self.artist_id.filter(|i| valid_id(i, "artist")) {
+            q.push(("artist_id", id));
+        }
+        if let Some(id) = self.album_id.filter(|i| valid_id(i, "album")) {
+            q.push(("album_id", id));
+        }
+    }
 }
 
 pub struct Client {
@@ -393,6 +413,7 @@ impl Client {
         artist: &str,
         album: Option<&str>,
         duration_ms: i64,
+        scope: Scope,
     ) -> Result<Option<SongRes>> {
         let duration = duration_ms.to_string();
         let mut q = vec![("name", clip(title.trim()))];
@@ -405,6 +426,7 @@ impl Client {
         if duration_ms > 0 {
             q.push(("duration", &duration));
         }
+        scope.push(&mut q);
         Ok(self
             .get::<Single>("/identify/song", &q)?
             .and_then(|s| s.data.into_song()))
@@ -417,6 +439,7 @@ impl Client {
         album: Option<&str>,
         duration_ms: i64,
         limit: usize,
+        scope: Scope,
     ) -> Result<Vec<SongRes>> {
         let duration = duration_ms.to_string();
         let limit_text = limit.to_string();
@@ -430,6 +453,7 @@ impl Client {
         if duration_ms > 0 {
             q.push(("duration", &duration));
         }
+        scope.push(&mut q);
         match self.get::<Many>("/search/song", &q)? {
             Some(many) => Ok(many
                 .data
@@ -437,20 +461,83 @@ impl Client {
                 .filter_map(Resource::into_song)
                 .collect()),
             None => Ok(self
-                .identify_song(title, artist, album, duration_ms)?
+                .identify_song(title, artist, album, duration_ms, scope)?
                 .into_iter()
                 .collect()),
         }
     }
 
-    pub fn identify_album(&self, title: &str, artist: &str) -> Result<Option<AlbumRes>> {
+    pub fn identify_album(
+        &self,
+        title: &str,
+        artist: &str,
+        scope: Scope,
+    ) -> Result<Option<AlbumRes>> {
         let mut q = vec![("name", clip(title.trim()))];
         if !artist.trim().is_empty() {
             q.push(("artist", clip(artist.trim())));
         }
+        scope.push(&mut q);
         Ok(self
             .get::<Single>("/identify/album", &q)?
             .and_then(|s| s.data.into_album()))
+    }
+
+    pub fn catalog_album(&self, id: &str) -> Result<Option<AlbumRes>> {
+        if !valid_id(id, "album") {
+            return Ok(None);
+        }
+        Ok(self
+            .get::<Single>(&format!("/catalog/{id}"), &[])?
+            .and_then(|s| s.data.into_album()))
+    }
+
+    pub fn catalog_artist(&self, id: &str) -> Result<Option<ArtistRes>> {
+        if !valid_id(id, "artist") {
+            return Ok(None);
+        }
+        Ok(self
+            .get::<Single>(&format!("/catalog/{id}"), &[])?
+            .and_then(|s| s.data.into_artist()))
+    }
+
+    pub fn search_albums(
+        &self,
+        title: &str,
+        artist: &str,
+        limit: usize,
+        scope: Scope,
+    ) -> Result<Vec<AlbumRes>> {
+        let limit_text = limit.to_string();
+        let mut q = vec![("name", clip(title.trim())), ("limit", limit_text.as_str())];
+        if !artist.trim().is_empty() {
+            q.push(("artist", clip(artist.trim())));
+        }
+        scope.push(&mut q);
+        match self.get::<Many>("/search/album", &q)? {
+            Some(many) => Ok(many
+                .data
+                .into_iter()
+                .filter_map(Resource::into_album)
+                .collect()),
+            None => Ok(self
+                .identify_album(title, artist, scope)?
+                .into_iter()
+                .collect()),
+        }
+    }
+
+    pub fn search_artists(&self, name: &str, limit: usize) -> Result<Vec<ArtistRes>> {
+        let limit_text = limit.to_string();
+        let q = [("name", clip(name.trim())), ("limit", limit_text.as_str())];
+        match self.get::<Many>("/search/artist", &q)? {
+            Some(many) => Ok(many
+                .data
+                .into_iter()
+                .filter_map(Resource::into_artist)
+                .collect()),
+            None => Ok(self.identify_artist(name)?.into_iter().collect()),
+        }
     }
 
     pub fn identify_artist(&self, name: &str) -> Result<Option<ArtistRes>> {
@@ -630,27 +717,11 @@ pub fn store_song_match(
     Ok(())
 }
 
-pub fn store_manual_match(
+fn reset_song_fields(
     conn: &Connection,
     song_id: &str,
-    m: &SongRes,
-    local_album: Option<&str>,
     file: Option<&crate::scanner::tags::TrackInfo>,
 ) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE albums SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
-             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
-             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
-             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
-         WHERE id = (SELECT album_id FROM songs WHERE id = ?1)",
-        [song_id],
-    )?;
-    conn.execute(
-        "UPDATE artists SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
-             image_hash = NULL, image_path = NULL
-         WHERE id IN (SELECT artist_id FROM song_artists WHERE song_id = ?1)",
-        [song_id],
-    )?;
     conn.execute(
         "UPDATE songs SET year = ?2, date = ?3, isrc = ?4, track = ?5, disc = ?6 WHERE id = ?1",
         params![
@@ -680,25 +751,193 @@ pub fn store_manual_match(
             params![song_id, gid, i as i64],
         )?;
     }
+    Ok(())
+}
+
+fn reset_album_fields(
+    conn: &Connection,
+    album_of: &str,
+    key: &str,
+    file: Option<&crate::scanner::tags::TrackInfo>,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE albums SET year = ?2, date = ?3, upc = ?4, label = ?5
-         WHERE id = (SELECT album_id FROM songs WHERE id = ?1)",
+        &format!(
+            "UPDATE albums SET year = ?2, date = ?3, upc = ?4, label = ?5 WHERE id = ({album_of})"
+        ),
         params![
-            song_id,
+            key,
             file.and_then(|t| t.year),
             file.and_then(|t| t.date.clone()),
             file.and_then(|t| t.upc.as_deref()).and_then(normalize_upc),
             file.and_then(|t| t.label.clone()),
         ],
     )?;
+    Ok(())
+}
+
+pub fn store_manual_match(
+    conn: &Connection,
+    song_id: &str,
+    m: &SongRes,
+    local_album: Option<&str>,
+    file: Option<&crate::scanner::tags::TrackInfo>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE albums SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
+             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
+             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
+             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
+         WHERE id = (SELECT album_id FROM songs WHERE id = ?1)",
+        [song_id],
+    )?;
+    conn.execute(
+        "UPDATE artists SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
+             image_hash = NULL, image_path = NULL
+         WHERE id IN (SELECT artist_id FROM song_artists WHERE song_id = ?1)",
+        [song_id],
+    )?;
+    reset_song_fields(conn, song_id, file)?;
+    reset_album_fields(
+        conn,
+        "SELECT album_id FROM songs WHERE id = ?1",
+        song_id,
+        file,
+    )?;
     store_song_match(conn, song_id, m, local_album)
 }
 
-pub fn clear_match(conn: &Connection, song_id: &str) -> rusqlite::Result<()> {
+pub fn clear_match(
+    conn: &Connection,
+    song_id: &str,
+    file: Option<&crate::scanner::tags::TrackInfo>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE albums SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
+             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
+             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
+             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
+         WHERE id = (SELECT album_id FROM songs WHERE id = ?1)",
+        [song_id],
+    )?;
+    conn.execute(
+        "UPDATE artists SET omm_id = NULL, omm_art_url = NULL, omm_art_tried_at = NULL,
+             image_hash = NULL, image_path = NULL
+         WHERE id IN (SELECT artist_id FROM song_artists WHERE song_id = ?1)",
+        [song_id],
+    )?;
+    if file.is_some() {
+        reset_song_fields(conn, song_id, file)?;
+        reset_album_fields(
+            conn,
+            "SELECT album_id FROM songs WHERE id = ?1",
+            song_id,
+            file,
+        )?;
+    }
     conn.execute(
         "UPDATE songs SET omm_id = NULL, omm_checked_at = NULL, omm_synced_at = NULL,
              omm_retry_at = ?2 WHERE id = ?1",
-        params![song_id, now() + UNRESOLVED_RETRY_SECS],
+        params![song_id, NEVER_RETRY],
+    )?;
+    Ok(())
+}
+
+pub fn store_album_match(conn: &Connection, album_id: &str, m: &AlbumRes) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE albums SET omm_id = ?2, omm_checked_at = ?3, omm_retry_at = NULL,
+             upc = COALESCE(?4, upc), label = COALESCE(?5, label),
+             omm_art_url = ?6, omm_art_tried_at = NULL,
+             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
+             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
+             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
+         WHERE id = ?1",
+        params![
+            album_id,
+            m.id,
+            now(),
+            m.attributes.upc.as_deref().and_then(normalize_upc),
+            m.attributes.label,
+            m.attributes.artwork_url
+        ],
+    )?;
+    seed_album_songs(conn, album_id, &m.attributes)
+}
+
+pub fn clear_album_match(
+    conn: &Connection,
+    album_id: &str,
+    files: &[(String, Option<crate::scanner::tags::TrackInfo>)],
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE albums SET omm_id = NULL, omm_checked_at = NULL, omm_art_url = NULL,
+             omm_art_tried_at = NULL, omm_retry_at = ?2,
+             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
+             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
+             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
+         WHERE id = ?1",
+        params![album_id, NEVER_RETRY],
+    )?;
+    for (song_id, file) in files {
+        if file.is_some() {
+            reset_song_fields(conn, song_id, file.as_ref())?;
+        }
+    }
+    if let Some(first) = files.iter().find_map(|(_, f)| f.as_ref()) {
+        reset_album_fields(conn, "SELECT ?1", album_id, Some(first))?;
+    }
+    Ok(())
+}
+
+pub fn store_artist_match(
+    conn: &Connection,
+    artist_id: &str,
+    m: &ArtistRes,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE artists SET omm_id = ?2, omm_checked_at = ?3, omm_retry_at = NULL,
+             omm_art_url = ?4, omm_art_tried_at = NULL, image_hash = NULL, image_path = NULL
+         WHERE id = ?1",
+        params![artist_id, m.id, now(), m.attributes.artwork_url],
+    )?;
+    Ok(())
+}
+
+pub fn clear_artist_match(conn: &Connection, artist_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE artists SET omm_id = NULL, omm_checked_at = NULL, omm_art_url = NULL,
+             omm_art_tried_at = NULL, omm_retry_at = ?2, image_hash = NULL, image_path = NULL
+         WHERE id = ?1",
+        params![artist_id, NEVER_RETRY],
+    )?;
+    Ok(())
+}
+
+pub fn refetch_all(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE songs SET omm_synced_at = NULL WHERE omm_id IS NOT NULL",
+        [],
+    )?;
+    for table in ["songs", "albums", "artists"] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET omm_retry_at = NULL
+                 WHERE omm_id IS NULL AND omm_retry_at IS NOT NULL AND omm_retry_at < ?1"
+            ),
+            [NEVER_RETRY],
+        )?;
+    }
+    conn.execute(
+        "UPDATE albums SET omm_art_url = NULL, omm_art_tried_at = NULL,
+             cover_hash = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_hash END,
+             cover_path = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_path END,
+             cover_source = CASE WHEN cover_source = 'omm' THEN NULL ELSE cover_source END
+         WHERE omm_id IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE artists SET omm_art_url = NULL, omm_art_tried_at = NULL, image_hash = NULL, image_path = NULL
+         WHERE omm_id IS NOT NULL",
+        [],
     )?;
     Ok(())
 }
@@ -740,6 +979,8 @@ type SongRow = (
     i64,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 struct SongWork {
@@ -751,6 +992,8 @@ struct SongWork {
     duration_ms: i64,
     isrc: Option<String>,
     omm_id: Option<String>,
+    album_omm: Option<String>,
+    artist_omm: Option<String>,
 }
 
 fn load_song_work(conn: &Connection, resolve: bool) -> Result<Vec<SongWork>> {
@@ -760,7 +1003,9 @@ fn load_song_work(conn: &Connection, resolve: bool) -> Result<Vec<SongWork>> {
         "s.omm_id IS NOT NULL AND (s.omm_synced_at IS NULL OR s.omm_synced_at < s.indexed_at) AND ?1 = ?1"
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT s.id, s.title, s.display_artist, al.title, s.duration_ms, s.isrc, s.omm_id
+        "SELECT s.id, s.title, s.display_artist, al.title, s.duration_ms, s.isrc, s.omm_id, al.omm_id,
+                (SELECT a.omm_id FROM song_artists sa JOIN artists a ON a.id = sa.artist_id
+                   WHERE sa.song_id = s.id ORDER BY sa.position LIMIT 1)
          FROM songs s JOIN albums al ON al.id = s.album_id WHERE {filter} LIMIT {BATCH}"
     ))?;
     let rows: Vec<SongRow> = stmt
@@ -773,11 +1018,13 @@ fn load_song_work(conn: &Connection, resolve: bool) -> Result<Vec<SongWork>> {
                 r.get(4)?,
                 r.get(5)?,
                 r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
-    for (id, title, display, album, duration_ms, isrc, omm_id) in rows {
+    for (id, title, display, album, duration_ms, isrc, omm_id, album_omm, artist_omm) in rows {
         let mut stmt = conn.prepare(
             "SELECT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id WHERE sa.song_id = ?1 ORDER BY sa.position",
         )?;
@@ -793,6 +1040,8 @@ fn load_song_work(conn: &Connection, resolve: bool) -> Result<Vec<SongWork>> {
             duration_ms,
             isrc,
             omm_id,
+            album_omm,
+            artist_omm,
         });
     }
     Ok(out)
@@ -868,7 +1117,8 @@ fn resolve_songs(db: &Db, client: &Client) -> Result<bool> {
     if work.is_empty() {
         return Ok(false);
     }
-    tracing::debug!("omm: looking up {} songs", work.len());
+    let batch = work.len();
+    tracing::debug!("omm: looking up {batch} songs");
     let isrcs: Vec<String> = work.iter().filter_map(|w| w.isrc.clone()).collect();
     let by_isrc = if isrcs.is_empty() {
         HashMap::new()
@@ -902,8 +1152,25 @@ fn resolve_songs(db: &Db, client: &Client) -> Result<bool> {
         let result = if skip || from_isrc.is_some() {
             Ok(from_isrc)
         } else {
+            let scope = if w.album_omm.is_some() {
+                Scope {
+                    artist_id: None,
+                    album_id: w.album_omm.as_deref(),
+                }
+            } else {
+                Scope {
+                    artist_id: w.artist_omm.as_deref(),
+                    album_id: None,
+                }
+            };
             client
-                .identify_song(&w.title, &w.artist, w.album.as_deref(), w.duration_ms)
+                .identify_song(
+                    &w.title,
+                    &w.artist,
+                    w.album.as_deref(),
+                    w.duration_ms,
+                    scope,
+                )
                 .map(|found| {
                     found.filter(|c| accept_song(c, &w.title, &w.artists, w.duration_ms, true))
                 })
@@ -929,7 +1196,16 @@ fn resolve_songs(db: &Db, client: &Client) -> Result<bool> {
             }
         }
     }
-    tracing::info!("omm songs: {resolved} resolved, {unmatched} unmatched, {deferred} deferred");
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM songs WHERE omm_id IS NULL AND (omm_retry_at IS NULL OR omm_retry_at <= ?1)",
+            [now()],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    tracing::info!(
+        "omm songs: batch of {batch}: {resolved} matched, {unmatched} not found (retry later), {deferred} errored, {left} still queued"
+    );
     Ok(true)
 }
 
@@ -961,22 +1237,25 @@ fn resync_songs(db: &Db, client: &Client) -> Result<bool> {
 
 fn resolve_albums(db: &Db, client: &Client) -> Result<bool> {
     let conn = db.conn()?;
-    let rows: Vec<(String, String, String, Option<String>)> = {
+    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = {
         let mut stmt = conn.prepare(&format!(
             "SELECT al.id, al.title, COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
-                 WHERE aa.album_id = al.id ORDER BY aa.position LIMIT 1), ''), al.upc
+                 WHERE aa.album_id = al.id ORDER BY aa.position LIMIT 1), ''), al.upc,
+                 (SELECT a.omm_id FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
+                    WHERE aa.album_id = al.id ORDER BY aa.position LIMIT 1)
              FROM albums al WHERE al.omm_id IS NULL AND al.title NOT LIKE '[%'
                AND (al.omm_retry_at IS NULL OR al.omm_retry_at <= ?1) LIMIT {BATCH}"
         ))?;
         stmt.query_map([now()], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .collect::<rusqlite::Result<_>>()?
     };
     if rows.is_empty() {
         return Ok(false);
     }
-    tracing::debug!("omm: looking up {} albums", rows.len());
+    let batch = rows.len();
+    tracing::debug!("omm: looking up {batch} albums");
     let upcs: Vec<String> = rows.iter().filter_map(|r| r.3.clone()).collect();
     let by_upc = if upcs.is_empty() {
         HashMap::new()
@@ -984,7 +1263,7 @@ fn resolve_albums(db: &Db, client: &Client) -> Result<bool> {
         client.albums_by_upc(&upcs)?
     };
 
-    let looked = parallel(rows, |(id, title, artist, upc)| {
+    let looked = parallel(rows, |(id, title, artist, upc, artist_omm)| {
         let from_upc = upc
             .as_deref()
             .and_then(normalize_upc)
@@ -997,7 +1276,14 @@ fn resolve_albums(db: &Db, client: &Client) -> Result<bool> {
         let result = match from_upc {
             Some(m) => Ok(Some(m)),
             None => client
-                .identify_album(&title, &artist)
+                .identify_album(
+                    &title,
+                    &artist,
+                    Scope {
+                        artist_id: artist_omm.as_deref(),
+                        album_id: None,
+                    },
+                )
                 .map(|found| found.filter(|a| similar(&a.attributes.name, &title))),
         };
         (id, result)
@@ -1033,7 +1319,16 @@ fn resolve_albums(db: &Db, client: &Client) -> Result<bool> {
             }
         }
     }
-    tracing::info!("omm albums: {resolved} resolved, {unmatched} unmatched");
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM albums WHERE omm_id IS NULL AND title NOT LIKE '[%' AND (omm_retry_at IS NULL OR omm_retry_at <= ?1)",
+            [now()],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    tracing::info!(
+        "omm albums: batch of {batch}: {resolved} matched, {unmatched} not found (retry later), {left} still queued"
+    );
     Ok(true)
 }
 
@@ -1050,7 +1345,8 @@ fn resolve_artists(db: &Db, client: &Client) -> Result<bool> {
     if rows.is_empty() {
         return Ok(false);
     }
-    tracing::debug!("omm: looking up {} artists", rows.len());
+    let batch = rows.len();
+    tracing::debug!("omm: looking up {batch} artists");
     let looked = parallel(rows, |(id, name)| {
         let result = if name.chars().count() > MAX_NAME_CHARS {
             Ok(None)
@@ -1083,7 +1379,16 @@ fn resolve_artists(db: &Db, client: &Client) -> Result<bool> {
             }
         }
     }
-    tracing::info!("omm artists: {resolved} resolved, {unmatched} unmatched");
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM artists WHERE omm_id IS NULL AND name NOT LIKE '[%' AND name <> 'Various Artists' AND (omm_retry_at IS NULL OR omm_retry_at <= ?1)",
+            [now()],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    tracing::info!(
+        "omm artists: batch of {batch}: {resolved} matched, {unmatched} not found (retry later), {left} still queued"
+    );
     Ok(true)
 }
 
@@ -1236,16 +1541,16 @@ fn fetch_artwork(db: &Db, client: &Client, dir: &Path) -> Result<bool> {
 }
 
 pub fn pass(db: &Db, client: &Client, art_dir: &Path) -> Result<bool> {
-    if resolve_songs(db, client)? {
-        return Ok(true);
-    }
-    if resync_songs(db, client)? {
+    if resolve_artists(db, client)? {
         return Ok(true);
     }
     if resolve_albums(db, client)? {
         return Ok(true);
     }
-    if resolve_artists(db, client)? {
+    if resolve_songs(db, client)? {
+        return Ok(true);
+    }
+    if resync_songs(db, client)? {
         return Ok(true);
     }
     if refresh_art_urls(db, client)? {
@@ -1285,7 +1590,7 @@ impl Handle {
     }
 }
 
-pub fn spawn(db: Db, client: Arc<Client>, art_dir: PathBuf) -> Handle {
+pub fn spawn(db: Db, client: Arc<Client>, art_dir: PathBuf, live: crate::live::Live) -> Handle {
     let handle = Handle {
         signal: Arc::new((Mutex::new(false), Condvar::new())),
         stop: Arc::new(AtomicBool::new(false)),
@@ -1301,6 +1606,7 @@ pub fn spawn(db: Db, client: Arc<Client>, art_dir: PathBuf) -> Handle {
                     Ok(true) => {
                         failures = 0;
                         idle = false;
+                        live.notify_topics(crate::live::Live::LIBRARY);
                     }
                     Ok(false) => {
                         failures = 0;

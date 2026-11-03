@@ -289,6 +289,7 @@ fn apply_omm(
                 meta.artists.first().map(String::as_str).unwrap_or(""),
                 meta.album.as_deref(),
                 duration_ms,
+                crate::omm::Scope::default(),
             )
             .unwrap_or_else(|e| {
                 tracing::warn!("omm identify failed: {e:#}");

@@ -572,8 +572,13 @@ async fn library_page(cx: &Cx) -> Result<impl View> {
             }
             let counts = c.query_row(
                 concat!(
-                    "SELECT COUNT(*), COALESCE(SUM(s.omm_id IS NOT NULL), 0) FROM songs s WHERE ",
-                    visible!("s.library_id")
+                    "SELECT
+                       (SELECT COUNT(*) FROM songs s WHERE ", visible!("s.library_id"), ")
+                     + (SELECT COUNT(*) FROM albums al WHERE ", visible!("al.library_id"), ")
+                     + (SELECT COUNT(*) FROM artists ar WHERE ", artist_visible!("ar.id"), "),
+                       (SELECT COUNT(*) FROM songs s WHERE s.omm_id IS NOT NULL AND ", visible!("s.library_id"), ")
+                     + (SELECT COUNT(*) FROM albums al WHERE al.omm_id IS NOT NULL AND ", visible!("al.library_id"), ")
+                     + (SELECT COUNT(*) FROM artists ar WHERE ar.omm_id IS NOT NULL AND ", artist_visible!("ar.id"), ")"
                 ),
                 [&uid],
                 |r| {
@@ -695,6 +700,30 @@ async fn cover(id: &str, has: bool) -> Result<impl View> {
     })
 }
 
+#[component]
+async fn candidate_cover(src: &str) -> Result<impl View> {
+    Ok(view! {
+        if src.is_empty() {
+            <span class="cover"></span>
+        } else {
+            <img class="cover" src=(src) alt="" loading="lazy" referrerpolicy="no-referrer">
+        }
+    })
+}
+
+fn full_id(input: &str, kind: &str) -> String {
+    let input = input.trim();
+    if !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()) {
+        format!("omm:{kind}:{input}")
+    } else {
+        input.to_string()
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    id.rsplit(':').next().unwrap_or(id)
+}
+
 fn at(q: &str, view: &str, status: &str, album: &str) -> String {
     at_sorted(q, view, status, album, "", "")
 }
@@ -814,7 +843,7 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
         ("added", at_sorted(&q, "albums", "all", "", "added", "")),
     ];
     let note = format!(
-        "{} songs, {} with metadata",
+        "{} items, {} with metadata",
         board.counts.total, board.counts.matched
     );
     let can_play = board.me.stream || board.me.admin;
@@ -892,21 +921,23 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                     </form>
                 </div>
                 <div class="summary">
-                    <span class="muted">(note.as_str())</span>
+                    <span class="muted" data-live="counts" data-topic="1">(note.as_str())</span>
                 </div>
                 match &board.adding {
                     Some(p) => adding_note(list: p),
                     None => "",
                 }
                 <div class="results" data-swap="results">
-                    match &board.heading {
-                        Some(a) => album_head(album: a, play: can_play),
-                        None => "",
-                    }
-                    match &board.person {
-                        Some(a) => artist_head(artist: a, play: can_play),
-                        None => "",
-                    }
+                    <div class="live" data-live="heading" data-topic="1">
+                        match &board.heading {
+                            Some(a) => album_head(album: a, play: can_play, catalogue: catalogue),
+                            None => "",
+                        }
+                        match &board.person {
+                            Some(a) => artist_head(artist: a, play: can_play, catalogue: catalogue),
+                            None => "",
+                        }
+                    </div>
                     match &board.shelf.open {
                         Some(p) => playlist_head(list: p, play: can_play, edit: manage),
                         None => "",
@@ -925,11 +956,12 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
                             <div class="row head">
                                 <span class="c-num">"#"</span>
                                 <span class="main">"title"</span>
+                                if catalogue { <span class="c-meta wide-only">"metadata"</span> }
                                 <span class="c-time"><span class="muted">icon(data: super::icons::DURATION_ICON)</span></span>
                             </div>
                             <div class="rows" data-queue="">
                                 for (i, s) in board.songs.iter().enumerate() {
-                                    track_row(song: s, play: can_play, index: i + 1)
+                                    track_row(song: s, play: can_play, index: i + 1, catalogue: catalogue)
                                 }
                             </div>
                         </div>
@@ -1019,8 +1051,9 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
 }
 
 #[component]
-async fn album_head(album: &Album, play: bool) -> Result<impl View> {
+async fn album_head(album: &Album, play: bool, #[default] catalogue: bool) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&album.id));
+    let target = format!("/library/candidates/album?id={}", escape(&album.id));
     Ok(view! {
         <div class="album-head">
             if play {
@@ -1050,6 +1083,7 @@ async fn album_head(album: &Album, play: bool) -> Result<impl View> {
                 }
                 <nav class="acts">
                     if play { <button data-playall="">"play all"</button> }
+                    if catalogue { jump(href: target.clone(), label: "match") }
                 </nav>
             </div>
         </div>
@@ -1089,8 +1123,9 @@ async fn album_tile(album: &Album, href: String, play: bool) -> Result<impl View
 }
 
 #[component]
-async fn artist_head(artist: &Artist, play: bool) -> Result<impl View> {
+async fn artist_head(artist: &Artist, play: bool, #[default] catalogue: bool) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&artist.id));
+    let target = format!("/library/candidates/artist?id={}", escape(&artist.id));
     Ok(view! {
         <div class="album-head">
             if play {
@@ -1116,6 +1151,7 @@ async fn artist_head(artist: &Artist, play: bool) -> Result<impl View> {
                 <span class="muted">(artist.detail.as_str())</span>
                 <nav class="acts">
                     if play { <button data-playall="">"play all"</button> }
+                    if catalogue { jump(href: target.clone(), label: "match") }
                 </nav>
             </div>
         </div>
@@ -1160,7 +1196,7 @@ async fn song_row(
     };
     let target = format!("/library/candidates?id={}", escape(&song.id));
     let status = match &song.omm_id {
-        Some(id) => id.clone(),
+        Some(id) => short_id(id).to_string(),
         None => "none".to_string(),
     };
     let cover_flag = if song.cover { "1" } else { "" };
@@ -1189,7 +1225,7 @@ async fn song_row(
             <span class="c-year wide-only muted">(song.year.as_str())</span>
             <span class="c-format wide-only muted">(song.format.as_str())</span>
             if catalogue {
-                <span class="c-meta wide-only"><span class="muted">(status.as_str())</span><nav class="choose">jump(href: target, label: "choose")</nav></span>
+                <span class="c-meta wide-only"><nav class="choose">jump(href: target, label: "match")</nav><span class="muted">(status.as_str())</span></span>
             }
             <span class="c-time muted">(song.length.as_str())</span>
             if !list.is_empty() {
@@ -1207,13 +1243,18 @@ async fn song_row(
 }
 
 #[component]
-async fn track_row(song: &Song, play: bool, index: usize) -> Result<impl View> {
+async fn track_row(song: &Song, play: bool, index: usize, catalogue: bool) -> Result<impl View> {
     let number = if song.number.is_empty() {
         index.to_string()
     } else {
         song.number.clone()
     };
     let cover_flag = if song.cover { "1" } else { "" };
+    let target = format!("/library/candidates?id={}", escape(&song.id));
+    let status = match &song.omm_id {
+        Some(id) => short_id(id).to_string(),
+        None => "none".to_string(),
+    };
     Ok(view! {
         <div class="row">
             <span class="c-num">
@@ -1230,6 +1271,9 @@ async fn track_row(song: &Song, play: bool, index: usize) -> Result<impl View> {
                 <strong>(song.title.as_str())</strong>
                 <span class="muted">credits(list: &song.artists)</span>
             </span>
+            if catalogue {
+                <span class="c-meta wide-only"><nav class="choose">jump(href: target, label: "match")</nav><span class="muted">(status.as_str())</span></span>
+            }
             <span class="c-time muted">(song.length.as_str())</span>
         </div>
     })
@@ -1243,10 +1287,15 @@ struct CandidateQuery {
 #[derive(Clone)]
 struct Candidate {
     id: String,
+    short: String,
+    art: String,
     name: String,
     artist: String,
     album: String,
     year: String,
+    number: String,
+    genre: String,
+    isrc: String,
     length: String,
     current: bool,
 }
@@ -1254,6 +1303,7 @@ struct Candidate {
 #[derive(Clone)]
 struct Choice {
     me: User,
+    facts: Vec<(String, String)>,
     song: Song,
     candidates: Vec<Candidate>,
 }
@@ -1268,10 +1318,22 @@ fn candidate(res: &SongRes, current: Option<&str>) -> Candidate {
     let length = attrs.duration_ms.map(clock).unwrap_or_default();
     Candidate {
         id: res.id.clone(),
+        short: short_id(&res.id).to_string(),
         name: attrs.name.clone(),
-        artist: attrs.artist_names.join(", "),
+        artist: joined(&attrs.artist_names),
+        art: omm::related_album(res, attrs.album_name.as_deref())
+            .and_then(|a| a.attributes.artwork_url.as_deref())
+            .map(|u| u.replace("{w}", "128").replace("{h}", "128"))
+            .unwrap_or_default(),
         album: attrs.album_name.clone().unwrap_or_default(),
         year: year.to_string(),
+        number: match (attrs.disc_number, attrs.track_number) {
+            (Some(d), Some(t)) => format!("{d}-{t}"),
+            (None, Some(t)) => t.to_string(),
+            _ => String::new(),
+        },
+        genre: joined(&attrs.genres),
+        isrc: attrs.isrc.clone().unwrap_or_default(),
         length,
         current: current == Some(res.id.as_str()),
     }
@@ -1287,12 +1349,17 @@ async fn candidates_page(cx: &Cx) -> Result<impl View> {
         return Err(back(Page::Library, Notice::CatalogueOff).into());
     };
     let (uid, id) = (me.id.clone(), query.id.clone());
-    let (rows, named) = st
+    let (rows, named, facts) = st
         .db
         .run(move |c| {
-            let rows = songs_by_ids(c, &uid, &[id])?;
+            let rows = songs_by_ids(c, &uid, &[id.clone()])?;
             let named = load_extras(c, &rows)?.artists;
-            Ok((rows, named))
+            let facts = if rows.is_empty() {
+                Vec::new()
+            } else {
+                song_facts(c, &id)?
+            };
+            Ok((rows, named, facts))
         })
         .await
         .map_err(fail)?;
@@ -1307,29 +1374,42 @@ async fn candidates_page(cx: &Cx) -> Result<impl View> {
         row.isrc.clone(),
         row.omm_id.clone(),
     );
-    let found = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<SongRes>> {
-        let mut found = client.search_songs(&title, &artist, Some(&album), duration, CANDIDATES)?;
-        if let Some(isrc) = isrc.as_deref().filter(|i| !i.is_empty()) {
-            for (_, songs) in client.songs_by_isrc(&[isrc.to_string()])? {
-                found.extend(songs);
+    let live = topcoat::router::request::headers(cx).contains_key("x-live");
+    let found = if live {
+        Vec::new()
+    } else {
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<SongRes>> {
+            let mut found = client.search_songs(
+                &title,
+                &artist,
+                Some(&album),
+                duration,
+                CANDIDATES,
+                omm::Scope::default(),
+            )?;
+            if let Some(isrc) = isrc.as_deref().filter(|i| !i.is_empty()) {
+                for (_, songs) in client.songs_by_isrc(&[isrc.to_string()])? {
+                    found.extend(songs);
+                }
             }
-        }
-        if let Some(id) = current.as_deref()
-            && let Some(song) = client.catalog_song(id)?
-        {
-            found.push(song);
-        }
-        let mut seen = std::collections::HashSet::new();
-        found.retain(|s| seen.insert(s.id.clone()));
-        Ok(found)
-    })
-    .await
-    .map_err(|_| fail(crate::error::ApiError::generic("internal server error")))?
-    .unwrap_or_default();
+            if let Some(id) = current.as_deref()
+                && let Some(song) = client.catalog_song(id)?
+            {
+                found.push(song);
+            }
+            let mut seen = std::collections::HashSet::new();
+            found.retain(|s| seen.insert(s.id.clone()));
+            Ok(found)
+        })
+        .await
+        .map_err(|_| fail(crate::error::ApiError::generic("internal server error")))?
+        .unwrap_or_default()
+    };
     let current = row.omm_id.clone();
     let mine = named.get(&row.id).cloned().unwrap_or_default();
     let choice = Choice {
         me,
+        facts,
         candidates: found
             .iter()
             .map(|s| candidate(s, current.as_deref()))
@@ -1354,7 +1434,7 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
     .collect::<Vec<_>>()
     .join(" - ");
     let matched = match &song.omm_id {
-        Some(id) => format!("matched: {id}"),
+        Some(id) => format!("matched: {}", short_id(id)),
         None => "not matched".to_string(),
     };
     Ok(view! {
@@ -1364,6 +1444,7 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
             me: Some(choice.me.clone()),
             notice: notice,
             <section class="panel wide">
+                <div class="live" data-live="match" data-topic="1">
                 <div class="album-head">
                     <span class="thumb big">
                         if song.cover {
@@ -1373,6 +1454,7 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
                         }
                     </span>
                     <div class="text">
+                        <span class="kind">"song"</span>
                         <strong class="title">(song.title.as_str())</strong>
                         <span class="muted">credits(list: &song.artists)</span>
                         <span class="muted">album_link(id: song.album_id.as_str(), title: song.album.as_str())</span>
@@ -1388,13 +1470,23 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
                         </nav>
                     </div>
                 </div>
+                <dl class="facts">
+                    for (k, v) in choice.facts.iter() {
+                        <div><dt>(k.as_str())</dt><dd>(v.as_str())</dd></div>
+                    }
+                </dl>
+                </div>
                 <span class="caption">"search results"</span>
                 <div class="list">
                     <div class="row head">
+                        <span class="c-cover">"#"</span>
                         <span class="main">"title"</span>
                         <span class="c-album">"album"</span>
                         <span class="c-year">"year"</span>
-                        <span class="c-meta">"id"</span>
+                        <span class="c-year">"disc-track"</span>
+                        <span class="c-genre">"genre"</span>
+                        <span class="c-code">"isrc"</span>
+                        <span class="c-id">"id"</span>
                         <span class="c-time"><span class="muted">icon(data: super::icons::DURATION_ICON)</span></span>
                         <span class="c-act"></span>
                     </div>
@@ -1403,13 +1495,19 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
                             <form method="post" action="/library/pick" class="row">
                                 <input type="hidden" name="id" value=(song.id.as_str())>
                                 <input type="hidden" name="omm" value=(c.id.as_str())>
+                                <span class="c-cover">
+                                    <span class="thumb">candidate_cover(src: c.art.as_str())</span>
+                                </span>
                                 <span class="main">
                                     <strong>(c.name.as_str())</strong>
                                     <span class="muted">(c.artist.as_str())</span>
                                 </span>
                                 <span class="c-album muted">(c.album.as_str())</span>
                                 <span class="c-year muted">(c.year.as_str())</span>
-                                <span class="c-meta muted">(c.id.as_str())</span>
+                                <span class="c-year muted">(c.number.as_str())</span>
+                                <span class="c-genre muted">(c.genre.as_str())</span>
+                                <span class="c-code muted">(c.isrc.as_str())</span>
+                                <span class="c-id muted">(c.short.as_str())</span>
                                 <span class="c-time muted">(c.length.as_str())</span>
                                 <span class="c-act"><button>if c.current { "keep" } else { "use" }</button></span>
                             </form>
@@ -1422,7 +1520,7 @@ async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl 
                 <span class="caption">"or paste an id"</span>
                 <form method="post" action="/library/pick">
                     <input type="hidden" name="id" value=(song.id.as_str())>
-                    field(label: "omm id", name: "omm", kind: "text", auto: "off", mode: "text")
+                    field(label: "omm id", name: "omm", kind: "text", auto: "off", mode: "text", placeholder: "1234567890")
                     <button>"use id"</button>
                 </form>
             </section>
@@ -1443,7 +1541,7 @@ async fn pick(cx: &Cx, Form(form): Form<PickForm>) -> Result<SeeOther> {
     let Some(client) = st.omm.clone() else {
         return Ok(back(Page::Library, Notice::CatalogueOff));
     };
-    let wanted = form.omm.trim().to_string();
+    let wanted = full_id(&form.omm, "song");
     if !omm::valid_id(&wanted, "song") {
         return Ok(back(Page::Library, Notice::Invalid));
     }
@@ -1476,6 +1574,7 @@ async fn pick(cx: &Cx, Form(form): Form<PickForm>) -> Result<SeeOther> {
         })
         .await
         .map_err(fail)?;
+    st.live.notify_topics(crate::live::Live::LIBRARY);
     if let Some(handle) = &st.omm_handle {
         handle.wake();
     }
@@ -1496,11 +1595,17 @@ async fn clear(cx: &Cx, Form(form): Form<ClearForm>) -> Result<SeeOther> {
             if !libraries::can_access_song(c, &me.id, &form.id)? {
                 return Ok(false);
             }
-            omm::clear_match(c, &form.id)?;
+            let path: String =
+                c.query_row("SELECT path FROM songs WHERE id = ?1", [&form.id], |r| {
+                    r.get(0)
+                })?;
+            let file = crate::scanner::tags::read_track(std::path::Path::new(&path)).ok();
+            omm::clear_match(c, &form.id, file.as_ref())?;
             Ok(true)
         })
         .await
         .map_err(fail)?;
+    state(cx).live.notify_topics(crate::live::Live::LIBRARY);
     Ok(back(
         Page::Library,
         if cleared {
@@ -1509,6 +1614,618 @@ async fn clear(cx: &Cx, Form(form): Form<ClearForm>) -> Result<SeeOther> {
             Notice::Invalid
         },
     ))
+}
+
+#[derive(Clone)]
+struct Match {
+    kind: &'static str,
+    id: String,
+    title: String,
+    sub: String,
+    art: bool,
+    omm_id: Option<String>,
+    facts: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+struct Pick {
+    id: String,
+    short: String,
+    name: String,
+    sub: String,
+    year: String,
+    genre: String,
+    tracks: String,
+    label: String,
+    code: String,
+    art: String,
+    current: bool,
+}
+
+#[derive(Clone)]
+struct MatchChoice {
+    me: User,
+    found: Match,
+    picks: Vec<Pick>,
+}
+
+fn fact(out: &mut Vec<(String, String)>, label: &str, value: impl Into<String>) {
+    let value = value.into();
+    if !value.trim().is_empty() {
+        out.push((label.to_string(), value));
+    }
+}
+
+fn names_of(c: &rusqlite::Connection, sql: &str, id: &str) -> rusqlite::Result<String> {
+    let mut stmt = c.prepare(sql)?;
+    let names: Vec<String> = stmt
+        .query_map([id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(names.join(", "))
+}
+
+fn song_facts(c: &rusqlite::Connection, id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    c.query_row(
+        "SELECT s.title, s.track, s.disc, s.year, s.date, s.original_date, s.duration_ms, s.bitrate,
+                s.sample_rate, s.channels, s.bit_depth, s.size, s.suffix, s.isrc, s.bpm, s.comment,
+                s.composer, s.mbid, s.path, s.omm_id, al.title, al.upc, al.label, s.disc_subtitle, s.album_id
+         FROM songs s JOIN albums al ON al.id = s.album_id WHERE s.id = ?1",
+        [id],
+        |r| {
+            let text = |i: usize| -> rusqlite::Result<String> {
+                Ok(r.get::<_, Option<String>>(i)?.unwrap_or_default())
+            };
+            let num = |i: usize| -> rusqlite::Result<i64> {
+                Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0))
+            };
+            fact(&mut out, "title", text(0)?);
+            fact(
+                &mut out,
+                "artists",
+                names_of(
+                    c,
+                    "SELECT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id WHERE sa.song_id = ?1 ORDER BY sa.position",
+                    id,
+                )?,
+            );
+            fact(&mut out, "album", text(20)?);
+            fact(
+                &mut out,
+                "album artists",
+                names_of(
+                    c,
+                    "SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = ?1 ORDER BY aa.position",
+                    &text(24)?,
+                )?,
+            );
+            if num(1)? > 0 {
+                fact(&mut out, "track", num(1)?.to_string());
+            }
+            if num(2)? > 0 {
+                fact(&mut out, "disc", num(2)?.to_string());
+            }
+            fact(&mut out, "disc title", text(23)?);
+            if num(3)? > 0 {
+                fact(&mut out, "year", num(3)?.to_string());
+            }
+            fact(&mut out, "date", text(4)?);
+            fact(&mut out, "original date", text(5)?);
+            fact(
+                &mut out,
+                "genres",
+                names_of(
+                    c,
+                    "SELECT g.name FROM song_genres sg JOIN genres g ON g.id = sg.genre_id WHERE sg.song_id = ?1 ORDER BY sg.position",
+                    id,
+                )?,
+            );
+            fact(&mut out, "isrc", text(13)?);
+            fact(&mut out, "length", if num(6)? > 0 { clock(num(6)?) } else { String::new() });
+            let bitrate = num(7)?;
+            let rate = num(8)?;
+            let depth = num(10)?;
+            let channels = num(9)?;
+            let format = [
+                text(12)?.to_uppercase(),
+                if bitrate > 0 { format!("{bitrate} kbps") } else { String::new() },
+                if rate > 0 { format!("{} kHz", rate as f64 / 1000.0) } else { String::new() },
+                if depth > 0 { format!("{depth}-bit") } else { String::new() },
+                match channels {
+                    0 => String::new(),
+                    1 => "mono".to_string(),
+                    2 => "stereo".to_string(),
+                    n => format!("{n} ch"),
+                },
+            ]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+            fact(&mut out, "format", format);
+            fact(&mut out, "size", format!("{:.1} MB", num(11)? as f64 / 1_048_576.0));
+            fact(&mut out, "bpm", if num(14)? > 0 { num(14)?.to_string() } else { String::new() });
+            fact(&mut out, "composer", text(16)?);
+            fact(&mut out, "comment", text(15)?);
+            fact(&mut out, "upc", text(21)?);
+            fact(&mut out, "label", text(22)?);
+            fact(&mut out, "musicbrainz id", text(17)?);
+            let path = text(18)?;
+            fact(&mut out, "file", path.rsplit('/').next().unwrap_or(&path).to_string());
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn album_facts(c: &rusqlite::Connection, id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    c.query_row(
+        "SELECT al.title, al.year, al.date, al.original_date, al.upc, al.label, al.mbid, al.is_compilation,
+                (SELECT COUNT(*) FROM songs s WHERE s.album_id = al.id),
+                (SELECT COALESCE(SUM(s.duration_ms), 0) FROM songs s WHERE s.album_id = al.id)
+         FROM albums al WHERE al.id = ?1",
+        [id],
+        |r| {
+            let text = |i: usize| -> rusqlite::Result<String> {
+                Ok(r.get::<_, Option<String>>(i)?.unwrap_or_default())
+            };
+            fact(&mut out, "title", text(0)?);
+            fact(
+                &mut out,
+                "artists",
+                names_of(
+                    c,
+                    "SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = ?1 ORDER BY aa.position",
+                    id,
+                )?,
+            );
+            if let Some(year) = r.get::<_, Option<i64>>(1)? {
+                fact(&mut out, "year", year.to_string());
+            }
+            fact(&mut out, "date", text(2)?);
+            fact(&mut out, "original date", text(3)?);
+            fact(&mut out, "upc", text(4)?);
+            fact(&mut out, "label", text(5)?);
+            fact(&mut out, "musicbrainz id", text(6)?);
+            if r.get::<_, i64>(7)? != 0 {
+                fact(&mut out, "compilation", "yes");
+            }
+            fact(&mut out, "songs", r.get::<_, i64>(8)?.to_string());
+            fact(&mut out, "length", clock(r.get::<_, i64>(9)?));
+            fact(
+                &mut out,
+                "genres",
+                names_of(
+                    c,
+                    "SELECT g.name FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
+                     JOIN songs s ON s.id = sg.song_id WHERE s.album_id = ?1 GROUP BY g.id ORDER BY COUNT(*) DESC",
+                    id,
+                )?,
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn artist_facts(c: &rusqlite::Connection, id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    c.query_row(
+        "SELECT name, sort_name, mbid,
+                (SELECT COUNT(DISTINCT aa.album_id) FROM album_artists aa WHERE aa.artist_id = ar.id),
+                (SELECT COUNT(*) FROM song_artists sa WHERE sa.artist_id = ar.id)
+         FROM artists ar WHERE ar.id = ?1",
+        [id],
+        |r| {
+            let text = |i: usize| -> rusqlite::Result<String> {
+                Ok(r.get::<_, Option<String>>(i)?.unwrap_or_default())
+            };
+            fact(&mut out, "name", text(0)?);
+            fact(&mut out, "sort name", text(1)?);
+            fact(&mut out, "musicbrainz id", text(2)?);
+            fact(&mut out, "albums", r.get::<_, i64>(3)?.to_string());
+            fact(&mut out, "songs", r.get::<_, i64>(4)?.to_string());
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn joined(names: &[String]) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for n in names {
+        if !seen.contains(&n.as_str()) {
+            seen.push(n);
+        }
+    }
+    seen.join(", ")
+}
+
+fn year_of(date: Option<&str>) -> String {
+    date.and_then(|d| d.get(..4)).unwrap_or("").to_string()
+}
+
+fn art_url(template: Option<&str>) -> String {
+    template
+        .map(|u| u.replace("{w}", "128").replace("{h}", "128"))
+        .unwrap_or_default()
+}
+
+async fn match_page(cx: &Cx, kind: &'static str) -> Result<MatchChoice> {
+    let me = require_role(cx, User::can_catalogue).await?;
+    let query = query_params::<CandidateQuery>(cx)?;
+    let st = state(cx);
+    let Some(client) = st.omm.clone() else {
+        return Err(back(Page::Library, Notice::CatalogueOff).into());
+    };
+    let (uid, id) = (me.id.clone(), query.id.clone());
+    let found = st
+        .db
+        .run(move |c| {
+            if kind == "album" {
+                if !libraries::can_access_album(c, &uid, &id)? {
+                    return Ok(None);
+                }
+                Ok(c.query_row(
+                    "SELECT al.title, COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
+                         WHERE aa.album_id = al.id ORDER BY aa.position LIMIT 1), ''), al.omm_id, al.cover_hash IS NOT NULL
+                     FROM albums al WHERE al.id = ?1",
+                    [&id],
+                    |r| {
+                        Ok(Match {
+                            kind,
+                            id: id.clone(),
+                            title: r.get(0)?,
+                            sub: r.get(1)?,
+                            omm_id: r.get(2)?,
+                            art: r.get(3)?,
+                            facts: Vec::new(),
+                        })
+                    },
+                )
+                .ok()
+                .map(|mut m| {
+                    m.facts = album_facts(c, &id).unwrap_or_default();
+                    m
+                }))
+            } else {
+                if !libraries::can_access_artist(c, &uid, &id)? {
+                    return Ok(None);
+                }
+                Ok(c.query_row(
+                    "SELECT name, omm_id, image_hash IS NOT NULL FROM artists WHERE id = ?1",
+                    [&id],
+                    |r| {
+                        Ok(Match {
+                            kind,
+                            id: id.clone(),
+                            title: r.get(0)?,
+                            sub: String::new(),
+                            omm_id: r.get(1)?,
+                            art: r.get(2)?,
+                            facts: Vec::new(),
+                        })
+                    },
+                )
+                .ok()
+                .map(|mut m| {
+                    m.facts = artist_facts(c, &id).unwrap_or_default();
+                    m
+                }))
+            }
+        })
+        .await
+        .map_err(fail)?;
+    let Some(found) = found else {
+        return Err(back(Page::Library, Notice::Invalid).into());
+    };
+    if topcoat::router::request::headers(cx).contains_key("x-live") {
+        return Ok(MatchChoice {
+            me,
+            found,
+            picks: Vec::new(),
+        });
+    }
+    let (title, sub, current) = (found.title.clone(), found.sub.clone(), found.omm_id.clone());
+    let picks = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Pick>> {
+        let mut picks = if kind == "album" {
+            let mut list = client.search_albums(&title, &sub, CANDIDATES, omm::Scope::default())?;
+            if let Some(id) = current.as_deref()
+                && let Some(album) = client.catalog_album(id)?
+            {
+                list.push(album);
+            }
+            list.into_iter()
+                .map(|a| Pick {
+                    short: short_id(&a.id).to_string(),
+                    name: a.attributes.name,
+                    sub: joined(&a.attributes.artist_names),
+                    year: year_of(a.attributes.release_date.as_deref()),
+                    genre: joined(&a.attributes.genres),
+                    tracks: a
+                        .attributes
+                        .track_count
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
+                    label: a.attributes.label.clone().unwrap_or_default(),
+                    code: a.attributes.upc.clone().unwrap_or_default(),
+                    art: art_url(a.attributes.artwork_url.as_deref()),
+                    current: current.as_deref() == Some(a.id.as_str()),
+                    id: a.id,
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let mut list = client.search_artists(&title, CANDIDATES)?;
+            if let Some(id) = current.as_deref()
+                && let Some(artist) = client.catalog_artist(id)?
+            {
+                list.push(artist);
+            }
+            list.into_iter()
+                .map(|a| Pick {
+                    short: short_id(&a.id).to_string(),
+                    name: a.attributes.name,
+                    sub: String::new(),
+                    year: String::new(),
+                    genre: joined(&a.attributes.genres),
+                    tracks: String::new(),
+                    label: String::new(),
+                    code: String::new(),
+                    art: art_url(a.attributes.artwork_url.as_deref()),
+                    current: current.as_deref() == Some(a.id.as_str()),
+                    id: a.id,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut seen = std::collections::HashSet::new();
+        picks.retain(|p| seen.insert(p.id.clone()));
+        Ok(picks)
+    })
+    .await
+    .map_err(|_| fail(crate::error::ApiError::generic("internal server error")))?
+    .unwrap_or_default();
+    Ok(MatchChoice { me, found, picks })
+}
+
+#[page("/library/candidates/album")]
+async fn candidates_album_page(cx: &Cx) -> Result<impl View> {
+    let notice = notice_of(cx)?;
+    let choice = match_page(cx, "album").await?;
+    Ok(view! { match_view(choice: choice, notice: notice) })
+}
+
+#[page("/library/candidates/artist")]
+async fn candidates_artist_page(cx: &Cx) -> Result<impl View> {
+    let notice = notice_of(cx)?;
+    let choice = match_page(cx, "artist").await?;
+    Ok(view! { match_view(choice: choice, notice: notice) })
+}
+
+#[component]
+async fn match_view(choice: MatchChoice, notice: Option<Notice>) -> Result<impl View> {
+    let found = choice.found.clone();
+    let big = format!("/art?id={}&size=480", escape(&found.id));
+    let round = if found.kind == "artist" { " round" } else { "" };
+    let thumb = format!("thumb big{round}");
+    let row_thumb = format!("thumb{round}");
+    let matched = match &found.omm_id {
+        Some(id) => format!("matched: {}", short_id(id)),
+        None => "not matched".to_string(),
+    };
+    let pick_action = format!("/library/pick/{}", found.kind);
+    let clear_action = format!("/library/clear/{}", found.kind);
+    let label = format!("omm {} id", found.kind);
+    let example = "1234567890".to_string();
+    Ok(view! {
+        shell(
+            page: Some(Page::Library),
+            name: choice.me.name.as_str(),
+            me: Some(choice.me.clone()),
+            notice: notice,
+            <section class="panel wide">
+                <div class="live" data-live="match" data-topic="1">
+                <div class="album-head">
+                    <span class=(thumb.as_str())>
+                        if found.art {
+                            <img class="cover" src=(big.as_str()) alt="">
+                        } else {
+                            <span class="cover"></span>
+                        }
+                    </span>
+                    <div class="text">
+                        <span class="kind">(found.kind)</span>
+                        <strong class="title">(found.title.as_str())</strong>
+                        if !found.sub.is_empty() {
+                            <span class="muted">(found.sub.as_str())</span>
+                        }
+                        <span class="muted">(matched.as_str())</span>
+                        <nav class="acts">
+                            if found.omm_id.is_some() {
+                                <form method="post" action=(clear_action.as_str())>
+                                    <input type="hidden" name="id" value=(found.id.as_str())>
+                                    <button class="ghost danger">"clear match"</button>
+                                </form>
+                            }
+                        </nav>
+                    </div>
+                </div>
+                <dl class="facts">
+                    for (k, v) in found.facts.iter() {
+                        <div><dt>(k.as_str())</dt><dd>(v.as_str())</dd></div>
+                    }
+                </dl>
+                </div>
+                <span class="caption">"search results"</span>
+                <div class="list">
+                    <div class="row head">
+                        <span class="c-cover">"#"</span>
+                        <span class="main">"name"</span>
+                        if found.kind == "album" { <span class="c-year">"year"</span> }
+                        if found.kind == "album" { <span class="c-year wide-only">"songs"</span> }
+                        <span class="c-genre">"genre"</span>
+                        if found.kind == "album" { <span class="c-label">"label"</span> }
+                        if found.kind == "album" { <span class="c-code">"upc"</span> }
+                        <span class="c-id">"id"</span>
+                        <span class="c-act"></span>
+                    </div>
+                    <div class="rows">
+                        for c in choice.picks.iter() {
+                            <form method="post" action=(pick_action.as_str()) class="row">
+                                <input type="hidden" name="id" value=(found.id.as_str())>
+                                <input type="hidden" name="omm" value=(c.id.as_str())>
+                                <span class="c-cover">
+                                    <span class=(row_thumb.as_str())>candidate_cover(src: c.art.as_str())</span>
+                                </span>
+                                <span class="main">
+                                    <strong>(c.name.as_str())</strong>
+                                    <span class="muted">(c.sub.as_str())</span>
+                                </span>
+                                if found.kind == "album" { <span class="c-year muted">(c.year.as_str())</span> }
+                                if found.kind == "album" { <span class="c-year wide-only muted">(c.tracks.as_str())</span> }
+                                <span class="c-genre muted">(c.genre.as_str())</span>
+                                if found.kind == "album" { <span class="c-label muted">(c.label.as_str())</span> }
+                                if found.kind == "album" { <span class="c-code muted">(c.code.as_str())</span> }
+                                <span class="c-id muted">(c.short.as_str())</span>
+                                <span class="c-act"><button>if c.current { "keep" } else { "use" }</button></span>
+                            </form>
+                        }
+                    </div>
+                </div>
+                if choice.picks.is_empty() {
+                    <p class="muted">"nothing found"</p>
+                }
+                <span class="caption">"or paste an id"</span>
+                <form method="post" action=(pick_action.as_str())>
+                    <input type="hidden" name="id" value=(found.id.as_str())>
+                    field(label: label.as_str(), name: "omm", kind: "text", auto: "off", mode: "text", placeholder: example.as_str())
+                    <button>"use id"</button>
+                </form>
+            </section>
+        )
+    })
+}
+
+async fn pick_entity(cx: &Cx, form: PickForm, kind: &'static str) -> Result<SeeOther> {
+    let me = require_role(cx, User::can_catalogue).await?;
+    let st = state(cx);
+    let Some(client) = st.omm.clone() else {
+        return Ok(back(Page::Library, Notice::CatalogueOff));
+    };
+    let wanted = full_id(&form.omm, kind);
+    if !omm::valid_id(&wanted, kind) {
+        return Ok(back(Page::Library, Notice::Invalid));
+    }
+    let (uid, id) = (me.id.clone(), form.id.clone());
+    let allowed = st
+        .db
+        .run(move |c| {
+            Ok(if kind == "album" {
+                libraries::can_access_album(c, &uid, &id)?
+            } else {
+                libraries::can_access_artist(c, &uid, &id)?
+            })
+        })
+        .await
+        .map_err(fail)?;
+    if !allowed {
+        return Ok(back(Page::Library, Notice::Invalid));
+    }
+    let id = form.id;
+    if kind == "album" {
+        let fetched = tokio::task::spawn_blocking(move || client.catalog_album(&wanted))
+            .await
+            .map_err(|_| fail(crate::error::ApiError::generic("internal server error")))?;
+        let Ok(Some(found)) = fetched else {
+            return Ok(back(Page::Library, Notice::Invalid));
+        };
+        st.db
+            .run(move |c| Ok(omm::store_album_match(c, &id, &found)?))
+            .await
+            .map_err(fail)?;
+    } else {
+        let fetched = tokio::task::spawn_blocking(move || client.catalog_artist(&wanted))
+            .await
+            .map_err(|_| fail(crate::error::ApiError::generic("internal server error")))?;
+        let Ok(Some(found)) = fetched else {
+            return Ok(back(Page::Library, Notice::Invalid));
+        };
+        st.db
+            .run(move |c| Ok(omm::store_artist_match(c, &id, &found)?))
+            .await
+            .map_err(fail)?;
+    }
+    st.live.notify_topics(crate::live::Live::LIBRARY);
+    if let Some(handle) = &st.omm_handle {
+        handle.wake();
+    }
+    Ok(back(Page::Library, Notice::CatalogueMatched))
+}
+
+async fn clear_entity(cx: &Cx, form: ClearForm, kind: &'static str) -> Result<SeeOther> {
+    let me = require_role(cx, User::can_catalogue).await?;
+    let cleared = state(cx)
+        .db
+        .run(move |c| {
+            if kind == "album" {
+                if !libraries::can_access_album(c, &me.id, &form.id)? {
+                    return Ok(false);
+                }
+                let mut stmt = c.prepare(
+                    "SELECT id, path FROM songs WHERE album_id = ?1 ORDER BY disc, track, path",
+                )?;
+                let songs: Vec<(String, String)> = stmt
+                    .query_map([&form.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let files: Vec<_> = songs
+                    .into_iter()
+                    .map(|(id, path)| {
+                        (
+                            id,
+                            crate::scanner::tags::read_track(std::path::Path::new(&path)).ok(),
+                        )
+                    })
+                    .collect();
+                omm::clear_album_match(c, &form.id, &files)?;
+            } else {
+                if !libraries::can_access_artist(c, &me.id, &form.id)? {
+                    return Ok(false);
+                }
+                omm::clear_artist_match(c, &form.id)?;
+            }
+            Ok(true)
+        })
+        .await
+        .map_err(fail)?;
+    state(cx).live.notify_topics(crate::live::Live::LIBRARY);
+    Ok(back(
+        Page::Library,
+        if cleared {
+            Notice::CatalogueCleared
+        } else {
+            Notice::Invalid
+        },
+    ))
+}
+
+#[route(POST "/library/pick/album")]
+async fn pick_album(cx: &Cx, Form(form): Form<PickForm>) -> Result<SeeOther> {
+    pick_entity(cx, form, "album").await
+}
+
+#[route(POST "/library/pick/artist")]
+async fn pick_artist(cx: &Cx, Form(form): Form<PickForm>) -> Result<SeeOther> {
+    pick_entity(cx, form, "artist").await
+}
+
+#[route(POST "/library/clear/album")]
+async fn clear_album(cx: &Cx, Form(form): Form<ClearForm>) -> Result<SeeOther> {
+    clear_entity(cx, form, "album").await
+}
+
+#[route(POST "/library/clear/artist")]
+async fn clear_artist(cx: &Cx, Form(form): Form<ClearForm>) -> Result<SeeOther> {
+    clear_entity(cx, form, "artist").await
 }
 
 #[route(GET "/player.js")]
@@ -1531,6 +2248,12 @@ async fn script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
 pub fn routes(b: RouterBuilder) -> RouterBuilder {
     b.page(library_page)
         .page(candidates_page)
+        .page(candidates_album_page)
+        .page(candidates_artist_page)
+        .route(pick_album)
+        .route(pick_artist)
+        .route(clear_album)
+        .route(clear_artist)
         .route(pick)
         .route(clear)
         .route(script)

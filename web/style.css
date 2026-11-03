@@ -357,13 +357,17 @@ code {
   [aria-pressed="true"],
   .popup .item[aria-current="true"]
 ):is(:hover, :focus-visible),
-.tile:is(:has([aria-current="true"]), [data-picked]):is(:hover, :has(.face:focus-visible)) {
+.tile:is(:has([aria-current="true"]), [data-picked]):is(
+    :hover,
+    :has(.face:focus-visible)
+  ) {
   background: var(--accent-surface) !important;
   color: var(--bg) !important;
   filter: none !important;
 }
 
-.tile:is(:has([aria-current="true"]), [data-picked]) .edit:is(:hover, :focus-visible) {
+.tile:is(:has([aria-current="true"]), [data-picked])
+  .edit:is(:hover, :focus-visible) {
   background: var(--bg) !important;
   color: var(--text) !important;
 }
@@ -746,7 +750,6 @@ summary {
     align-self: center;
     font-size: 1em;
   }
-
 }
 
 .thumb {
@@ -854,7 +857,13 @@ summary {
 
   .rail {
     width: 100%;
-    background: conic-gradient(var(--tint) 25%, transparent 0 50%, var(--tint) 0 75%, transparent 0) 0 0 / 4px 4px;
+    background: conic-gradient(
+        var(--tint) 25%,
+        transparent 0 50%,
+        var(--tint) 0 75%,
+        transparent 0
+      )
+      0 0 / 4px 4px;
   }
 
   .fill {
@@ -980,7 +989,10 @@ button.icon {
   .inner {
     display: grid;
     grid-template-columns:
-      minmax(calc(14 * var(--ch)), calc(30 * var(--ch))) auto auto minmax(0, 1fr)
+      minmax(calc(14 * var(--ch)), calc(30 * var(--ch))) auto auto minmax(
+        0,
+        1fr
+      )
       auto minmax(0, calc(20 * var(--ch))) auto;
     align-items: center;
     column-gap: var(--gap);
@@ -1151,7 +1163,10 @@ button.icon {
 
       .tiles {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(calc(16 * var(--ch)), 1fr));
+        grid-template-columns: repeat(
+          auto-fill,
+          minmax(calc(16 * var(--ch)), 1fr)
+        );
         gap: var(--ch);
 
         @media (max-width: 560px) {
@@ -1513,6 +1528,7 @@ body:has(.player:not([hidden])) .screen {
 
   .main {
     flex: 2 1 0;
+    min-width: calc(20 * var(--ch));
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -1539,12 +1555,13 @@ body:has(.player:not([hidden])) .screen {
 
   .c-num {
     flex: none;
-    width: calc(3 * var(--ch));
+    width: 2rlh;
+    text-align: center;
   }
 
   .c-album {
     flex: 1 1 0;
-    min-width: calc(16 * var(--ch));
+    min-width: calc(20 * var(--ch));
   }
 
   .c-year,
@@ -1557,6 +1574,26 @@ body:has(.player:not([hidden])) .screen {
   .c-format {
     flex: none;
     width: calc(11 * var(--ch));
+  }
+
+  .c-genre {
+    flex: none;
+    width: calc(26 * var(--ch));
+  }
+
+  .c-label {
+    flex: none;
+    width: calc(26 * var(--ch));
+  }
+
+  .c-code {
+    flex: none;
+    width: calc(15 * var(--ch));
+  }
+
+  .c-id {
+    flex: none;
+    width: calc(12 * var(--ch));
   }
 
   .c-meta {
@@ -1573,15 +1610,14 @@ body:has(.player:not([hidden])) .screen {
     height: 1rlh;
     padding: 0;
     background: none;
-    text-align: left;
+    text-align: center;
     color: var(--text-secondary);
 
     .glyph {
       position: absolute;
-      inset: 0 auto 0 0;
+      inset: 0;
       display: grid;
       place-items: center;
-      width: 1.2rem;
       background: var(--bg);
       color: var(--text);
       opacity: 0;
@@ -1602,7 +1638,6 @@ body:has(.player:not([hidden])) .screen {
       color: var(--accent);
     }
   }
-
 }
 
 .list {
@@ -1619,6 +1654,19 @@ body:has(.player:not([hidden])) .screen {
 
   &:hover {
     text-decoration: underline;
+  }
+}
+
+@container (max-width: 150ch) {
+  .row .c-label,
+  .row .c-code {
+    display: none;
+  }
+}
+
+@container (max-width: 120ch) {
+  .row .c-genre {
+    display: none;
   }
 }
 
@@ -2074,10 +2122,15 @@ html[data-player-open] {
 
     .popup {
       position: fixed;
-      inset: auto var(--gap) calc(var(--gap) + env(safe-area-inset-bottom, 0px)) var(--gap);
+      inset: auto var(--gap) calc(var(--gap) + env(safe-area-inset-bottom, 0px))
+        var(--gap);
       width: auto;
       max-height: 70vh;
       z-index: 60;
     }
   }
+}
+
+.album-head .kind {
+  color: var(--accent);
 }

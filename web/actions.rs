@@ -416,6 +416,22 @@ async fn scan(cx: &Cx, Form(form): Form<ScanForm>) -> Result<SeeOther> {
     ))
 }
 
+#[route(POST "/server/metadata/refetch")]
+async fn refetch_metadata(cx: &Cx) -> Result<SeeOther> {
+    require_role(cx, User::can_catalogue).await?;
+    let st = state(cx);
+    let Some(handle) = st.omm_handle.clone() else {
+        return Ok(back(Page::Server, Notice::CatalogueOff));
+    };
+    st.db
+        .run(move |c| Ok(crate::omm::refetch_all(c)?))
+        .await
+        .map_err(fail)?;
+    handle.wake();
+    st.live.notify_topics(crate::live::Live::LIBRARY);
+    Ok(back(Page::Server, Notice::MetadataRefetch))
+}
+
 pub fn routes(b: RouterBuilder) -> RouterBuilder {
     b.route(profile)
         .route(password)
@@ -428,4 +444,5 @@ pub fn routes(b: RouterBuilder) -> RouterBuilder {
         .route(user_libraries)
         .route(delete_user)
         .route(scan)
+        .route(refetch_metadata)
 }

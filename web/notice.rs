@@ -32,13 +32,14 @@ pub enum Notice {
     CatalogueMatched,
     CatalogueCleared,
     CatalogueOff,
+    MetadataRefetch,
     PlaylistSaved,
     PlaylistDeleted,
     MissingRemoved,
 }
 
 impl Notice {
-    const EACH: [Notice; 31] = [
+    const EACH: [Notice; 32] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -67,6 +68,7 @@ impl Notice {
         Notice::CatalogueMatched,
         Notice::CatalogueCleared,
         Notice::CatalogueOff,
+        Notice::MetadataRefetch,
         Notice::PlaylistSaved,
         Notice::PlaylistDeleted,
         Notice::MissingRemoved,
@@ -102,6 +104,7 @@ impl Notice {
             Notice::CatalogueMatched => "catalogue-matched",
             Notice::CatalogueCleared => "catalogue-cleared",
             Notice::CatalogueOff => "catalogue-off",
+            Notice::MetadataRefetch => "metadata-refetch",
             Notice::PlaylistSaved => "playlist-saved",
             Notice::PlaylistDeleted => "playlist-deleted",
             Notice::MissingRemoved => "missing-removed",
@@ -142,6 +145,7 @@ impl Notice {
             Notice::CatalogueMatched => "metadata match saved",
             Notice::CatalogueCleared => "metadata match cleared",
             Notice::CatalogueOff => "metadata lookup is disabled on this server",
+            Notice::MetadataRefetch => "refetching all metadata",
             Notice::PlaylistSaved => "playlist saved",
             Notice::PlaylistDeleted => "playlist deleted",
             Notice::MissingRemoved => "missing songs removed",
