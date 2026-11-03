@@ -1352,7 +1352,7 @@ async fn candidates_page(cx: &Cx) -> Result<impl View> {
     let (rows, named, facts) = st
         .db
         .run(move |c| {
-            let rows = songs_by_ids(c, &uid, &[id.clone()])?;
+            let rows = songs_by_ids(c, &uid, std::slice::from_ref(&id))?;
             let named = load_extras(c, &rows)?.artists;
             let facts = if rows.is_empty() {
                 Vec::new()

@@ -1235,9 +1235,11 @@ fn resync_songs(db: &Db, client: &Client) -> Result<bool> {
     Ok(true)
 }
 
+type AlbumRow = (String, String, String, Option<String>, Option<String>);
+
 fn resolve_albums(db: &Db, client: &Client) -> Result<bool> {
     let conn = db.conn()?;
-    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = {
+    let rows: Vec<AlbumRow> = {
         let mut stmt = conn.prepare(&format!(
             "SELECT al.id, al.title, COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
                  WHERE aa.album_id = al.id ORDER BY aa.position LIMIT 1), ''), al.upc,
