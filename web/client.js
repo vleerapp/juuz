@@ -550,6 +550,7 @@
       document.cookie = `juuz_tz=${offset}; path=/; max-age=31536000; samesite=lax`;
     }
     const paged = () => !!document.querySelector("[data-live]");
+    const wants = (mask) => [...document.querySelectorAll("[data-live]")].some((el) => (el.dataset.topic ? mask !== 255 && Number(el.dataset.topic) & mask : true));
     const live = () => paged() || document.querySelector(".screen")?.dataset.jukebox === "1";
     const { id, info, kind } = window.juuzBrowser;
     const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/events?b=${encodeURIComponent(id)}&d=${encodeURIComponent(info)}&k=${kind}`;
@@ -593,9 +594,15 @@
     let socket = null;
     let timer = null;
     const samples = [];
+    let lastPcm = 0;
+    const syncWanted = () => !!window.juuzSyncWanted?.() || Date.now() - lastPcm < 20000;
     const sendSync = () => {
-      if (socket && socket.readyState === WebSocket.OPEN) socket.send(`sync:${performance.now()}`);
+      if (syncWanted() && socket && socket.readyState === WebSocket.OPEN) socket.send(`sync:${performance.now()}`);
     };
+    const burst = () => {
+      for (let i = 0; i < 15; i++) setTimeout(sendSync, i * 100);
+    };
+    window.addEventListener("juuz:syncwanted", burst);
 
     const connect = () => {
       clearTimeout(timer);
@@ -608,15 +615,22 @@
         if (delay > 500 && paged()) refresh();
         delay = 500;
         samples.length = 0;
-        for (let i = 0; i < 15; i++) setTimeout(sendSync, i * 100);
+        burst();
       });
       mine.addEventListener("message", (e) => {
         if (typeof e.data !== "string") {
+          if (Date.now() - lastPcm > 20000) {
+            lastPcm = Date.now();
+            burst();
+          }
+          lastPcm = Date.now();
           window.dispatchEvent(new CustomEvent("juuz:pcm", { detail: e.data }));
           return;
         }
-        if (e.data === "pulse") {
-          if (paged()) refresh();
+        if (e.data === "pulse" || e.data.startsWith("pulse:")) {
+          const mask = e.data === "pulse" ? 255 : Number(e.data.slice(6)) || 255;
+          if (mask !== 255 && mask & 1) window.dispatchEvent(new CustomEvent("juuz:pulse", { detail: mask }));
+          if (wants(mask)) refresh();
           return;
         }
         try {

@@ -154,10 +154,12 @@ impl Scanner {
         {
             return Ok(None);
         }
-        self.live.notify();
+        self.live
+            .notify_topics(crate::live::Live::LIBRARY | crate::live::Live::SCAN);
         let result = self.run_scan(library, full);
         self.running.store(false, Ordering::Release);
-        self.live.notify();
+        self.live
+            .notify_topics(crate::live::Live::LIBRARY | crate::live::Live::SCAN);
         result.map(Some)
     }
 
@@ -261,7 +263,8 @@ impl Scanner {
             moves.extend(outcome.album_moves);
             summary.scanned += tracks.len() as u64;
             self.count.fetch_add(chunk.len() as u64, Ordering::AcqRel);
-            self.live.notify();
+            self.live
+                .notify_topics(crate::live::Live::LIBRARY | crate::live::Live::SCAN);
         }
         index::finalize_albums(conn, &albums, &moves)?;
         let missing = index::count_stale(conn, library.id, generation, scan_start)?;
@@ -293,7 +296,8 @@ impl Scanner {
         })?;
         let outcome = index::upsert_tracks(&mut conn, &ctx, &[track])?;
         index::finalize_albums(&mut conn, &outcome.albums, &outcome.album_moves)?;
-        self.live.notify();
+        self.live
+            .notify_topics(crate::live::Live::LIBRARY | crate::live::Live::SCAN);
         outcome
             .song_ids
             .into_iter()
@@ -348,7 +352,8 @@ impl Scanner {
         }
         tx.commit()?;
         index::prune_entities(&mut conn)?;
-        self.live.notify();
+        self.live
+            .notify_topics(crate::live::Live::LIBRARY | crate::live::Live::SCAN);
         if purge_user_rows {
             index::prune_user_rows(&mut conn)?;
         }
@@ -387,7 +392,8 @@ impl Scanner {
         }
         tx.commit()?;
         index::prune_orphans(&mut conn)?;
-        self.live.notify();
+        self.live
+            .notify_topics(crate::live::Live::LIBRARY | crate::live::Live::SCAN);
         Ok(Some(missing.len()))
     }
 }

@@ -573,6 +573,8 @@
     if (!seeking && song?.duration) els.seek.set(at / song.duration);
   };
 
+  window.juuzSyncWanted = () => remote;
+
   const showOutputState = () => {
     els.output?.classList.toggle("on", remote);
   };
@@ -580,6 +582,7 @@
   const setRemote = (on) => {
     if (on === remote) return;
     remote = on;
+    if (on) window.dispatchEvent(new Event("juuz:syncwanted"));
     if (on) {
       audio.pause();
       closeOpen(position(), false);
@@ -995,7 +998,12 @@
     pcmVolume = Math.min(1, gain(v ?? 1));
     if (pcmGain) pcmGain.gain.value = pcmVolume;
   };
+  const pcmWanted = () => {
+    const out = remoteState?.output;
+    return !!remote && !!out && (out.id === mineUdn || out.protocol === "group");
+  };
   const unlockPcm = () => {
+    if (!pcmWanted()) return;
     pcmEnsure();
     if (pcmCtx.state !== "running") return;
     for (const type of ["pointerdown", "touchend", "keydown"]) document.removeEventListener(type, unlockPcm, true);
@@ -1724,7 +1732,7 @@
 
   document.addEventListener("submit", async (e) => {
     const form = e.target;
-    if (e.defaultPrevented || !current() || !form.matches?.("form")) return;
+    if (e.defaultPrevented || !form.matches?.("form")) return;
     if (form.method.toLowerCase() !== "post") return;
     const target = e.submitter?.formAction || form.action;
     const path = new URL(target, location.href).pathname;
@@ -1740,9 +1748,8 @@
       const doc = new DOMParser().parseFromString(await res.text(), "text/html");
       const next = doc.querySelector(".screen");
       const now = document.querySelector(".screen");
-      if (!next || !now) {
-        location.href = res.url;
-        return;
+      if (!res.ok || !next || !now) {
+        throw new Error("not a page");
       }
       now.replaceWith(next);
       document.title = doc.title || document.title;
@@ -1758,9 +1765,8 @@
   let navigation = 0;
   document.addEventListener("click", async (e) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    if (!bar || bar.hidden || !bar.isConnected) return;
     const link = e.target.closest?.("a[href]");
-    if (!link || link.target || link.hasAttribute("download") || bar.contains(link)) return;
+    if (!link || link.target || link.hasAttribute("download") || bar?.contains(link)) return;
     const url = new URL(link.href, location.href);
     if (url.origin !== location.origin || url.hash) return;
     if (url.pathname === "/logout" || url.pathname === "/login") return;
@@ -1869,10 +1875,10 @@
 
   const mountVirtual = (host) => {
     if (host._virtual && host._virtual.src === host.dataset.src) return;
-    const total = Number(host.dataset.total) || 0;
+    let total = Number(host.dataset.total) || 0;
     const src = host.dataset.src;
     const chunk = Number(host.dataset.chunk) || 60;
-    const rows = new Array(total);
+    let rows = new Array(total);
     const seeded = [...host.children].filter((el) => el.classList.contains("row"));
     const first = Number(host.dataset.offset) || 0;
     seeded.forEach((el, i) => {
@@ -1960,8 +1966,54 @@
       frame = requestAnimationFrame(() => render(false));
     }
 
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing || !alive() || range[0] < 0) return;
+      refreshing = true;
+      try {
+        const first = Math.floor(range[0] / chunk) * chunk;
+        const last = Math.floor(Math.max(range[0], range[1] - 1) / chunk) * chunk;
+        for (let base = first; base <= last; base += chunk) {
+          const res = await fetch(`${src}&offset=${base}&limit=${chunk}`, { credentials: "same-origin" });
+          const html = await res.text();
+          if (!alive()) return;
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          const fresh = doc.querySelector("[data-virtual]");
+          const count = Number(fresh?.dataset.total);
+          if (Number.isFinite(count) && count !== total) {
+            total = count;
+            rows = new Array(total);
+            requested.clear();
+            render(true);
+            return;
+          }
+          [...(fresh?.children || [])]
+            .filter((el) => el.classList.contains("row"))
+            .forEach((el, i) => {
+              const old = rows[base + i];
+              if (!old) {
+                rows[base + i] = el;
+              } else if (old.outerHTML.replace(/ playing/g, "") !== el.outerHTML.replace(/ playing/g, "")) {
+                if (old.isConnected) old.replaceWith(el);
+                rows[base + i] = el;
+              }
+            });
+        }
+        for (const base of [...requested]) {
+          if (base < first || base > last) {
+            requested.delete(base);
+            for (let i = base; i < Math.min(total, base + chunk); i++) rows[i] = undefined;
+          }
+        }
+        markPlaying();
+      } catch {} finally {
+        refreshing = false;
+      }
+    };
+
     host._virtual = {
       src,
+      refresh,
       loaded: () => rows.filter(Boolean),
       fill: async () => {
         for (let base = 0; base < total; base += chunk) {
@@ -1982,6 +2034,25 @@
     const src = host.dataset.src;
     const chunk = Number(host.dataset.chunk) || 60;
     let busy = false;
+
+    host._refresh = async () => {
+      if (busy || !host.isConnected || host.dataset.src !== src) return;
+      busy = true;
+      try {
+        const loaded = Math.max(host.children.length, chunk);
+        const res = await fetch(`${src}&offset=0&limit=${loaded}`, { credentials: "same-origin" });
+        const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+        const fresh = doc.querySelector("[data-more]");
+        if (!fresh || !host.isConnected) return;
+        const now = [...host.children];
+        const next = [...fresh.children];
+        if (now.length === next.length && now.every((el, i) => el.outerHTML.replace(/ playing/g, "") === next[i].outerHTML.replace(/ playing/g, ""))) return;
+        host.replaceChildren(...next);
+        markPlaying();
+      } catch {} finally {
+        busy = false;
+      }
+    };
 
     const check = () => {
       if (!host.isConnected || !host.hasAttribute("data-more") || host.dataset.src !== src) {
@@ -2014,6 +2085,11 @@
     document.querySelectorAll("[data-virtual]").forEach(mountVirtual);
     document.querySelectorAll("[data-more]").forEach(mountMore);
   };
+
+  window.addEventListener("juuz:pulse", () => {
+    document.querySelectorAll("[data-virtual]").forEach((host) => host._virtual?.refresh());
+    document.querySelectorAll("[data-more]").forEach((host) => host._refresh?.());
+  });
 
   let mounting = 0;
   new MutationObserver(() => {

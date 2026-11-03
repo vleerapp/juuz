@@ -75,14 +75,19 @@ async fn events(cx: &Cx, upgrade: WebSocketUpgrade) -> Result<Response> {
         let _leave = leave;
         let mut last: [String; 2] = Default::default();
         let mut dirty = true;
-        let mut page = false;
+        let mut page = 0u8;
         let mut retry = false;
         let mut tries = 0u8;
         loop {
             if dirty {
                 let mut out: Vec<(Option<usize>, String)> = Vec::new();
-                if page {
-                    out.push((None, "pulse".to_string()));
+                if page != 0 {
+                    let text = if page == crate::live::Live::ALL {
+                        "pulse".to_string()
+                    } else {
+                        format!("pulse:{page}")
+                    };
+                    out.push((None, text));
                 }
                 if jukebox {
                     if let Ok(queue) = remote::state_json(&st, &user).await {
@@ -108,15 +113,23 @@ async fn events(cx: &Cx, upgrade: WebSocketUpgrade) -> Result<Response> {
                     }
                 }
                 dirty = false;
-                page = false;
+                page = 0;
             }
             tokio::select! {
                 change = changes.recv() => match change {
-                    Ok(()) | Err(RecvError::Lagged(_)) => {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {
+                        page |= change.unwrap_or(crate::live::Live::ALL);
                         tokio::time::sleep(COALESCE).await;
-                        while changes.try_recv().is_ok() {}
+                        loop {
+                            match changes.try_recv() {
+                                Ok(mask) => page |= mask,
+                                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                    page = crate::live::Live::ALL;
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         dirty = true;
-                        page = true;
                     }
                     Err(RecvError::Closed) => return,
                 },
