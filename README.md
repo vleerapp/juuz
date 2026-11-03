@@ -13,19 +13,20 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 
 ## Features
 
-- **[Song upload](#song-upload)**: apps can save downloaded music straight to the server instead of the device, with covers, lyrics and tag fixing included
+- **[Song upload](#song-upload-extension)**: apps can save downloaded music straight to the server instead of the device, with covers, lyrics and tag fixing included
 - OpenSubsonic API 1.16.1, JSON and XML, tested with Feishin and Arpeggi
 - Every login style works for every user: password, token (can be switched off), API key
-- Song and artist matching through [OpenMusicMetadata](https://docs.vleer.app) exposed as `ommId`, missing years, genres and artwork filled in without touching the files
+- Song, album and artist matching through [OpenMusicMetadata](https://docs.vleer.app) exposed as `ommId`, missing years, genres and artwork filled in without touching the files, wrong matches fixable by hand
 - Songs identified by audio, so renaming or moving files keeps stars, playlists and history
 - Last.fm scrobbling and now playing, linked per user
 - Embedded lyrics and `.lrc` files first, then synced lyrics from LRCLIB
 - Albums and compilations grouped correctly without an album artist tag
+- Multiple libraries with per-user access and permission roles
 - Live SQLite library that watches the music folders
 - Opus, MP3 and AAC transcoding (`format=opus`, `mp3`, `aac`) in pure Rust, no ffmpeg
 - Shares, internet radio, play queue, bookmarks
 - Jukebox: the server plays to DLNA, AirPlay or Snapcast speakers, alone or as a synced group; any `jukeboxControl` app (Feishin) acts as the remote
-- **[Web UI](#web-ui)**: a keyboard-driven terminal-style interface for stats, account settings and user management
+- Web UI: a keyboard-driven terminal-style interface with a library browser and player, playlists, stats, users and server settings
 
 ## Installation
 
@@ -34,7 +35,7 @@ Save this as `docker-compose.yml`, point `/music` at the music folder and run `d
 ```yaml
 services:
   juuz:
-    image: ghcr.io/vleerapp/juuz:0.2.0
+    image: ghcr.io/vleerapp/juuz:latest
     restart: unless-stopped
     ports:
       - "4533:4533"

@@ -1,6 +1,6 @@
 services:
   juuz:
-    image: ghcr.io/vleerapp/juuz:0.2.0
+    image: ghcr.io/vleerapp/juuz:latest
     restart: unless-stopped
     ports:
       - "4533:4533"
