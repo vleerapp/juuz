@@ -73,7 +73,7 @@ fn listed(notice: Notice) -> SeeOther {
 }
 
 #[component]
-pub(super) async fn playlist_tile(list: &Playlist, play: bool) -> Result<impl View> {
+pub(super) async fn playlist_tile(cx: &Cx, list: &Playlist, play: bool) -> Result<impl View> {
     let open = href(&list.id);
     let big = format!("/art?id={}&size=480", escape(&list.id));
     Ok(view! {
@@ -105,7 +105,12 @@ pub(super) async fn playlist_tile(list: &Playlist, play: bool) -> Result<impl Vi
 }
 
 #[component]
-pub(super) async fn playlist_head(list: &Playlist, play: bool, edit: bool) -> Result<impl View> {
+pub(super) async fn playlist_head(
+    cx: &Cx,
+    list: &Playlist,
+    play: bool,
+    edit: bool,
+) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&list.id));
     let editable = edit && list.mine;
     Ok(view! {
@@ -161,7 +166,7 @@ pub(super) async fn playlist_head(list: &Playlist, play: bool, edit: bool) -> Re
 }
 
 #[component]
-pub(super) async fn adding_note(list: &Playlist) -> Result<impl View> {
+pub(super) async fn adding_note(cx: &Cx, list: &Playlist) -> Result<impl View> {
     Ok(view! {
         <div class="adding">
             <span>"adding to " <strong>(list.name.as_str())</strong></span>
@@ -176,7 +181,7 @@ pub(super) async fn adding_note(list: &Playlist) -> Result<impl View> {
 }
 
 #[component]
-pub(super) async fn playlist_create() -> Result<impl View> {
+pub(super) async fn playlist_create(cx: &Cx) -> Result<impl View> {
     Ok(view! {
         <form class="create" method="post" action="/library/playlists/create">
             <label class="search">

@@ -1,4 +1,5 @@
 use topcoat::Result;
+use topcoat::context::Cx;
 use topcoat::icon::{IconData, icon};
 use topcoat::view::svg::ViewBox;
 use topcoat::view::{View, component, view};
@@ -124,7 +125,7 @@ const REMOVE: IconData = shape!(
 );
 
 #[component]
-pub(super) async fn sheet() -> Result<impl View> {
+pub(super) async fn sheet(cx: &Cx) -> Result<impl View> {
     Ok(view! {
         <template id="juuz-icons">
             <span data-icon="play">icon(data: PLAY_ICON)</span>

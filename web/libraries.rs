@@ -44,6 +44,7 @@ pub(super) fn rows(c: &rusqlite::Connection) -> Result<Vec<Row>, crate::error::A
 
 #[component]
 pub(super) async fn libraries_panel(
+    cx: &Cx,
     me: &User,
     rows: &[Row],
     scanning: bool,
@@ -72,7 +73,7 @@ pub(super) async fn libraries_panel(
 }
 
 #[component]
-async fn library_row(row: &Row, me: &User, tz: i64) -> Result<impl View> {
+async fn library_row(cx: &Cx, row: &Row, me: &User, tz: i64) -> Result<impl View> {
     let library = &row.library;
     let online = library.online();
     let minutes = (library.scan_interval / 60).to_string();

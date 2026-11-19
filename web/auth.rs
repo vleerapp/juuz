@@ -2,7 +2,7 @@ use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 use topcoat::Result;
-use topcoat::context::{Cx, app_context};
+use topcoat::context::{Cx, context};
 use topcoat::router::content::Form;
 use topcoat::router::error::{SeeOther, see_other};
 use topcoat::router::route;
@@ -17,7 +17,7 @@ use crate::error::ApiError;
 use crate::state::AppState;
 
 pub fn state(cx: &Cx) -> &AppState {
-    app_context::<AppState>(cx)
+    context::<AppState>(cx)
 }
 
 pub fn https(cx: &Cx) -> bool {

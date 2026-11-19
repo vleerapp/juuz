@@ -15,12 +15,10 @@ pub mod remote;
 use std::time::Duration;
 
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
-use topcoat::cookie::{Cookie, Cookies, RouterBuilderCookieExt, SameSite, cookies};
+use topcoat::cookie::{Cookie, CookieLayer, Cookies, SameSite, cookies};
 use topcoat::router::{Router, tower::TowerService};
-use topcoat::runtime::RouterBuilderRuntimeExt;
-use topcoat::session::{
-    RouterBuilderSessionExt, SessionConfig, Token, TokenStore, TokenStoreFuture,
-};
+use topcoat::runtime::RuntimeLayer;
+use topcoat::session::{SessionLifetime, SessionTokenStore, Token, TokenStore, TokenStoreFuture};
 
 use crate::state::AppState;
 use auth::https;
@@ -105,16 +103,12 @@ pub fn service(st: AppState) -> TowerService {
     let builder = library::routes(builder);
     let builder = playlists::routes(builder);
     let builder = builder
-        .cookies()
-        .sessions(
-            SessionConfig::builder()
-                .token_store(CookieStore)
-                .lifetime(LIFETIME)
-                .build(),
-        )
-        .app_context(st);
+        .layer(CookieLayer::new())
+        .with(SessionTokenStore::new(CookieStore))
+        .with(SessionLifetime(LIFETIME))
+        .with(st);
     let builder = match AssetBundle::load() {
-        Ok(bundle) => builder.assets(bundle).runtime(),
+        Ok(bundle) => builder.assets(bundle).layer(RuntimeLayer::new()),
         Err(e) => {
             tracing::warn!("topcoat asset bundle not found, client-side navigation is off: {e}");
             builder

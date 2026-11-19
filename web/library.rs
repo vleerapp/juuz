@@ -655,7 +655,12 @@ pub(super) fn album_href(id: &str) -> String {
 }
 
 #[component]
-pub(super) async fn artist_link(id: &str, name: &str, #[default] off: bool) -> Result<impl View> {
+pub(super) async fn artist_link(
+    cx: &Cx,
+    id: &str,
+    name: &str,
+    #[default] off: bool,
+) -> Result<impl View> {
     let href = artist_href(id);
     Ok(view! {
         if off || id.is_empty() {
@@ -667,7 +672,12 @@ pub(super) async fn artist_link(id: &str, name: &str, #[default] off: bool) -> R
 }
 
 #[component]
-pub(super) async fn album_link(id: &str, title: &str, #[default] off: bool) -> Result<impl View> {
+pub(super) async fn album_link(
+    cx: &Cx,
+    id: &str,
+    title: &str,
+    #[default] off: bool,
+) -> Result<impl View> {
     let href = album_href(id);
     Ok(view! {
         if off || id.is_empty() {
@@ -679,7 +689,11 @@ pub(super) async fn album_link(id: &str, title: &str, #[default] off: bool) -> R
 }
 
 #[component]
-pub(super) async fn credits(list: &[(String, String)], #[default] off: bool) -> Result<impl View> {
+pub(super) async fn credits(
+    cx: &Cx,
+    list: &[(String, String)],
+    #[default] off: bool,
+) -> Result<impl View> {
     Ok(view! {
         for (i, pair) in list.iter().enumerate() {
             if i > 0 { ", " }
@@ -689,7 +703,7 @@ pub(super) async fn credits(list: &[(String, String)], #[default] off: bool) -> 
 }
 
 #[component]
-async fn cover(id: &str, has: bool) -> Result<impl View> {
+async fn cover(cx: &Cx, id: &str, has: bool) -> Result<impl View> {
     let src = format!("/art?id={}&size=128", escape(id));
     Ok(view! {
         if has {
@@ -701,7 +715,7 @@ async fn cover(id: &str, has: bool) -> Result<impl View> {
 }
 
 #[component]
-async fn candidate_cover(src: &str) -> Result<impl View> {
+async fn candidate_cover(cx: &Cx, src: &str) -> Result<impl View> {
     Ok(view! {
         if src.is_empty() {
             <span class="cover"></span>
@@ -752,6 +766,7 @@ fn next_sort(board: &Board, key: &str) -> (String, String) {
 
 #[component]
 async fn sort_head(
+    cx: &Cx,
     href: String,
     label: &str,
     active: bool,
@@ -778,7 +793,7 @@ async fn sort_head(
 }
 
 #[component]
-async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View> {
+async fn library_view(cx: &Cx, board: Board, notice: Option<Notice>) -> Result<impl View> {
     let in_artist = board.person.is_some();
     let in_list = board.shelf.open.is_some();
     let view = if board.shelf.open.is_some() || board.lists_view {
@@ -1051,7 +1066,12 @@ async fn library_view(board: Board, notice: Option<Notice>) -> Result<impl View>
 }
 
 #[component]
-async fn album_head(album: &Album, play: bool, #[default] catalogue: bool) -> Result<impl View> {
+async fn album_head(
+    cx: &Cx,
+    album: &Album,
+    play: bool,
+    #[default] catalogue: bool,
+) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&album.id));
     let target = format!("/library/candidates/album?id={}", escape(&album.id));
     Ok(view! {
@@ -1091,7 +1111,7 @@ async fn album_head(album: &Album, play: bool, #[default] catalogue: bool) -> Re
 }
 
 #[component]
-async fn album_tile(album: &Album, href: String, play: bool) -> Result<impl View> {
+async fn album_tile(cx: &Cx, album: &Album, href: String, play: bool) -> Result<impl View> {
     let open = href.clone();
     let big = format!("/art?id={}&size=480", escape(&album.id));
     Ok(view! {
@@ -1123,7 +1143,12 @@ async fn album_tile(album: &Album, href: String, play: bool) -> Result<impl View
 }
 
 #[component]
-async fn artist_head(artist: &Artist, play: bool, #[default] catalogue: bool) -> Result<impl View> {
+async fn artist_head(
+    cx: &Cx,
+    artist: &Artist,
+    play: bool,
+    #[default] catalogue: bool,
+) -> Result<impl View> {
     let big = format!("/art?id={}&size=480", escape(&artist.id));
     let target = format!("/library/candidates/artist?id={}", escape(&artist.id));
     Ok(view! {
@@ -1159,7 +1184,7 @@ async fn artist_head(artist: &Artist, play: bool, #[default] catalogue: bool) ->
 }
 
 #[component]
-async fn artist_tile(artist: &Artist) -> Result<impl View> {
+async fn artist_tile(cx: &Cx, artist: &Artist) -> Result<impl View> {
     let href = artist_href(&artist.id);
     let big = format!("/art?id={}&size=480", escape(&artist.id));
     Ok(view! {
@@ -1181,6 +1206,7 @@ async fn artist_tile(artist: &Artist) -> Result<impl View> {
 
 #[component]
 async fn song_row(
+    cx: &Cx,
     song: &Song,
     play: bool,
     catalogue: bool,
@@ -1243,7 +1269,13 @@ async fn song_row(
 }
 
 #[component]
-async fn track_row(song: &Song, play: bool, index: usize, catalogue: bool) -> Result<impl View> {
+async fn track_row(
+    cx: &Cx,
+    song: &Song,
+    play: bool,
+    index: usize,
+    catalogue: bool,
+) -> Result<impl View> {
     let number = if song.number.is_empty() {
         index.to_string()
     } else {
@@ -1420,7 +1452,7 @@ async fn candidates_page(cx: &Cx) -> Result<impl View> {
 }
 
 #[component]
-async fn candidates_view(choice: Choice, notice: Option<Notice>) -> Result<impl View> {
+async fn candidates_view(cx: &Cx, choice: Choice, notice: Option<Notice>) -> Result<impl View> {
     let song = choice.song.clone();
     let big = format!("/art?id={}&size=480", escape(&song.album_id));
     let detail = [
@@ -2003,7 +2035,7 @@ async fn candidates_artist_page(cx: &Cx) -> Result<impl View> {
 }
 
 #[component]
-async fn match_view(choice: MatchChoice, notice: Option<Notice>) -> Result<impl View> {
+async fn match_view(cx: &Cx, choice: MatchChoice, notice: Option<Notice>) -> Result<impl View> {
     let found = choice.found.clone();
     let big = format!("/art?id={}&size=480", escape(&found.id));
     let round = if found.kind == "artist" { " round" } else { "" };
@@ -2229,7 +2261,7 @@ async fn clear_artist(cx: &Cx, Form(form): Form<ClearForm>) -> Result<SeeOther> 
 }
 
 #[route(GET "/player.js")]
-async fn script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+async fn script(cx: &Cx) -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
         [
             (
