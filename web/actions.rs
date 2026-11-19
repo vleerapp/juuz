@@ -210,6 +210,44 @@ async fn lastfm_unlink(cx: &Cx) -> Result<SeeOther> {
 }
 
 #[derive(Deserialize)]
+struct ListenbrainzForm {
+    url: String,
+    token: String,
+}
+
+#[route(POST "/account/listenbrainz/link")]
+async fn listenbrainz_link(cx: &Cx, Form(form): Form<ListenbrainzForm>) -> Result<SeeOther> {
+    let user = require(cx).await?;
+    let token = form.token.trim();
+    let Some(url) = crate::listenbrainz::normalize_url(&form.url) else {
+        return Ok(back(Page::Account, Notice::ListenbrainzFailed));
+    };
+    if token.is_empty() || token.len() > MAX_FIELD {
+        return Ok(back(Page::Account, Notice::ListenbrainzFailed));
+    }
+    let linked = crate::api::listenbrainz::link_account(state(cx), &user.id, &url, token).await;
+    Ok(back(
+        Page::Account,
+        if linked.is_ok() {
+            Notice::ListenbrainzLinked
+        } else {
+            Notice::ListenbrainzFailed
+        },
+    ))
+}
+
+#[route(POST "/account/listenbrainz/unlink")]
+async fn listenbrainz_unlink(cx: &Cx) -> Result<SeeOther> {
+    let user = require(cx).await?;
+    state(cx)
+        .db
+        .run(move |c| Ok(users::set_listenbrainz(c, &user.id, None)?))
+        .await
+        .map_err(fail)?;
+    Ok(back(Page::Account, Notice::ListenbrainzUnlinked))
+}
+
+#[derive(Deserialize)]
 struct CreateForm {
     username: String,
     password: String,
@@ -439,6 +477,8 @@ pub fn routes(b: RouterBuilder) -> RouterBuilder {
         .route(lastfm_start)
         .route(lastfm_callback)
         .route(lastfm_unlink)
+        .route(listenbrainz_link)
+        .route(listenbrainz_unlink)
         .route(create_user)
         .route(update_user)
         .route(user_libraries)

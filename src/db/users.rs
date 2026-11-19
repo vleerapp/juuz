@@ -380,6 +380,46 @@ pub fn set_lastfm(
     Ok(())
 }
 
+pub struct ListenbrainzLink {
+    pub url: String,
+    pub token: Vec<u8>,
+}
+
+pub fn listenbrainz_link(
+    conn: &Connection,
+    user_id: &str,
+) -> rusqlite::Result<Option<ListenbrainzLink>> {
+    let row: Option<(Option<String>, Option<Vec<u8>>)> = conn
+        .query_row(
+            "SELECT listenbrainz_url, listenbrainz_token FROM users WHERE id = ?1",
+            [user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.and_then(|(url, token)| {
+        Some(ListenbrainzLink {
+            url: url?,
+            token: token?,
+        })
+    }))
+}
+
+pub fn set_listenbrainz(
+    conn: &Connection,
+    user_id: &str,
+    link: Option<(&str, &[u8])>,
+) -> rusqlite::Result<()> {
+    let (url, token) = match link {
+        Some((u, t)) => (Some(u), Some(t)),
+        None => (None, None),
+    };
+    conn.execute(
+        "UPDATE users SET listenbrainz_url = ?2, listenbrainz_token = ?3 WHERE id = ?1",
+        params![user_id, url, token],
+    )?;
+    Ok(())
+}
+
 pub fn by_session(
     conn: &Connection,
     token_hash: &[u8],

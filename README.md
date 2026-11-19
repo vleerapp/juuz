@@ -19,6 +19,7 @@ An OpenSubsonic server written in Rust with song uploads and OpenMusicMetadata t
 - Song, album and artist matching through [OpenMusicMetadata](https://docs.vleer.app) exposed as `ommId`, missing years, genres and artwork filled in without touching the files, wrong matches fixable by hand
 - Songs identified by audio, so renaming or moving files keeps stars, playlists and history
 - Last.fm scrobbling and now playing, linked per user
+- ListenBrainz, Koito and Maloja scrobbling and now playing, linked per user with just a server url and token
 - Embedded lyrics and `.lrc` files first, then synced lyrics from LRCLIB
 - Albums and compilations grouped correctly without an album artist tag
 - Multiple libraries with per-user access and permission roles
@@ -61,6 +62,8 @@ volumes:
 The server runs on port 4533. The music folder must be writable by uid 1000, since uploads are saved there.
 
 For Last.fm, create an API account at [last.fm/api](https://www.last.fm/api/account/create), set both variables and restart. Each user then links their account on the `account` page.
+
+ListenBrainz, Koito and Maloja need no server setup. Each user pastes their token on the `account` page and, for a self-hosted server, its url (`http://koito:4110/apis/listenbrainz`, `http://maloja:42010/apis/listenbrainz`). Leave the url empty for listenbrainz.org.
 
 ## Jukebox outputs
 

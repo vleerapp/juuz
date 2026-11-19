@@ -15,6 +15,9 @@ pub enum Notice {
     LastfmLinked,
     LastfmUnlinked,
     LastfmFailed,
+    ListenbrainzLinked,
+    ListenbrainzUnlinked,
+    ListenbrainzFailed,
     UserCreated,
     UserUpdated,
     UserDeleted,
@@ -39,7 +42,7 @@ pub enum Notice {
 }
 
 impl Notice {
-    const EACH: [Notice; 32] = [
+    const EACH: [Notice; 35] = [
         Notice::LoginFailed,
         Notice::Forbidden,
         Notice::Invalid,
@@ -51,6 +54,9 @@ impl Notice {
         Notice::LastfmLinked,
         Notice::LastfmUnlinked,
         Notice::LastfmFailed,
+        Notice::ListenbrainzLinked,
+        Notice::ListenbrainzUnlinked,
+        Notice::ListenbrainzFailed,
         Notice::UserCreated,
         Notice::UserUpdated,
         Notice::UserDeleted,
@@ -87,6 +93,9 @@ impl Notice {
             Notice::LastfmLinked => "lastfm-linked",
             Notice::LastfmUnlinked => "lastfm-unlinked",
             Notice::LastfmFailed => "lastfm-failed",
+            Notice::ListenbrainzLinked => "listenbrainz-linked",
+            Notice::ListenbrainzUnlinked => "listenbrainz-unlinked",
+            Notice::ListenbrainzFailed => "listenbrainz-failed",
             Notice::UserCreated => "user-created",
             Notice::UserUpdated => "user-updated",
             Notice::UserDeleted => "user-deleted",
@@ -128,6 +137,9 @@ impl Notice {
             Notice::LastfmLinked => "last.fm linked",
             Notice::LastfmUnlinked => "last.fm unlinked",
             Notice::LastfmFailed => "last.fm request failed",
+            Notice::ListenbrainzLinked => "listenbrainz linked",
+            Notice::ListenbrainzUnlinked => "listenbrainz unlinked",
+            Notice::ListenbrainzFailed => "could not link, check the url and token",
             Notice::UserCreated => "user created",
             Notice::UserUpdated => "user updated",
             Notice::UserDeleted => "user deleted",
@@ -161,6 +173,7 @@ impl Notice {
                 | Notice::PasswordWrong
                 | Notice::PasswordMismatch
                 | Notice::LastfmFailed
+                | Notice::ListenbrainzFailed
                 | Notice::UserExists
                 | Notice::SelfProtected
                 | Notice::ScanBusy

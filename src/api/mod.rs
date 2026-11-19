@@ -2,11 +2,13 @@ pub mod annotation;
 pub mod browse;
 pub mod jukebox;
 pub mod lastfm;
+pub mod listenbrainz;
 pub mod lists;
 pub mod media;
 pub mod model;
 pub mod playlists;
 pub mod queue;
+pub mod scrobble;
 pub mod search;
 pub mod social;
 pub mod system;
@@ -169,6 +171,15 @@ fn endpoints() -> Vec<(&'static str, MethodRouter<AppState>)> {
         ("juuzLastfmAuthUrl", endpoint(true, lastfm::auth_url)),
         ("juuzLastfmLink", endpoint(true, lastfm::link)),
         ("juuzLastfmUnlink", endpoint(true, lastfm::unlink)),
+        (
+            "juuzListenbrainzStatus",
+            endpoint(true, listenbrainz::status),
+        ),
+        ("juuzListenbrainzLink", endpoint(true, listenbrainz::link)),
+        (
+            "juuzListenbrainzUnlink",
+            endpoint(true, listenbrainz::unlink),
+        ),
         ("juuzGetApiKeys", endpoint(true, users::get_api_keys)),
         ("juuzDeleteApiKey", endpoint(true, users::delete_api_key)),
         ("getMusicFolders", endpoint(true, browse::get_music_folders)),

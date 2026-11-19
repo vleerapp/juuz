@@ -518,6 +518,7 @@ pub struct Key {
 pub struct Account {
     pub keys: Vec<Key>,
     pub lastfm: Option<String>,
+    pub listenbrainz: Option<String>,
 }
 
 pub fn account(c: &Connection, user: &User) -> Result<Account, ApiError> {
@@ -527,6 +528,7 @@ pub fn account(c: &Connection, user: &User) -> Result<Account, ApiError> {
             .map(|(id, name, created)| Key { id, name, created })
             .collect(),
         lastfm: users::lastfm_session(c, &user.id)?.map(|(_, name)| name),
+        listenbrainz: users::listenbrainz_link(c, &user.id)?.map(|l| l.url),
     })
 }
 

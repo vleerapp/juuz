@@ -6,6 +6,7 @@ pub mod error;
 pub mod ids;
 pub mod jukebox;
 pub mod lastfm;
+pub mod listenbrainz;
 pub mod live;
 pub mod lyrics;
 pub mod net;

@@ -170,7 +170,7 @@ pub async fn record(
         if !exists {
             return Err(ApiError::not_found("song"));
         }
-        super::lastfm::forward(st, user, vec![ids[0].clone()], Vec::new(), false);
+        super::scrobble::forward(st, user, vec![ids[0].clone()], Vec::new(), false);
         let mut playing = st.now_playing.lock().unwrap_or_else(|e| e.into_inner());
         crate::state::prune_now_playing(&mut playing, &user.id);
         playing.insert(
@@ -220,7 +220,7 @@ pub async fn record(
         })
         .await?;
     let (forward_ids, forward_times) = fresh.into_iter().unzip();
-    super::lastfm::forward(st, user, forward_ids, forward_times, true);
+    super::scrobble::forward(st, user, forward_ids, forward_times, true);
     if synthetic {
         st.now_playing
             .lock()

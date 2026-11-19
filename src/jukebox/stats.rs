@@ -50,7 +50,7 @@ async fn handle_event(st: &AppState, event: PlayEvent) {
                     },
                 );
             st.live.notify();
-            crate::api::lastfm::forward(st, &user, vec![song_id], Vec::new(), false);
+            crate::api::scrobble::forward(st, &user, vec![song_id], Vec::new(), false);
         }
         PlayEvent::Played {
             user_id,
@@ -70,7 +70,7 @@ async fn handle_event(st: &AppState, event: PlayEvent) {
                 .run(move |c| Ok(record_play(c, &uid, &sid, at)?))
                 .await;
             if saved.is_ok_and(|fresh| fresh) {
-                crate::api::lastfm::forward(st, &user, vec![song_id], vec![at * 1000], true);
+                crate::api::scrobble::forward(st, &user, vec![song_id], vec![at * 1000], true);
                 st.live.notify();
             }
         }

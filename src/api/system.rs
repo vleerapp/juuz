@@ -24,6 +24,7 @@ pub async fn extensions(ctx: Ctx) -> ApiResult {
         json!({"name": "juuzJukeboxOutput", "versions": [1, 2]}),
         json!({"name": "juuzJukeboxEvents", "versions": [1]}),
         json!({"name": "juuzJukeboxQueue", "versions": [1]}),
+        json!({"name": "juuzListenbrainz", "versions": [1]}),
     ];
     if ctx.st.lastfm.is_some() {
         list.push(json!({"name": "juuzLastfm", "versions": [1]}));

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::context::try_app_context;
+use topcoat::context::try_context;
 use topcoat::cookie::{Cookies, cookies};
 use topcoat::icon::icon;
 use topcoat::router::content::Form;
@@ -155,7 +155,7 @@ async fn stats_board(cx: &Cx, me: User, range: Range, everyone: bool) -> Result<
 }
 
 #[route(GET "/juuz.css")]
-async fn stylesheet() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+async fn stylesheet(cx: &Cx) -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
         [
             (
@@ -172,7 +172,7 @@ async fn stylesheet() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> 
 }
 
 #[route(GET "/departure-mono.woff2")]
-async fn font() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
+async fn font(cx: &Cx) -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
     Ok((
         [
             (header::CONTENT_TYPE, HeaderValue::from_static("font/woff2")),
@@ -186,7 +186,7 @@ async fn font() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
 }
 
 #[route(GET "/logo.svg")]
-async fn logo() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+async fn logo(cx: &Cx) -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
         [
             (
@@ -203,7 +203,7 @@ async fn logo() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
 }
 
 #[route(GET "/favicon.ico")]
-async fn favicon() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
+async fn favicon(cx: &Cx) -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
     Ok((
         [
             (
@@ -220,7 +220,7 @@ async fn favicon() -> Result<([(HeaderName, HeaderValue); 2], &'static [u8])> {
 }
 
 #[route(GET "/client.js")]
-async fn client_script() -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
+async fn client_script(cx: &Cx) -> Result<([(HeaderName, HeaderValue); 2], &'static str)> {
     Ok((
         [
             (
@@ -249,7 +249,7 @@ fn client_version() -> u64 {
 }
 
 fn runtime_on(cx: &Cx) -> bool {
-    try_app_context::<RuntimeSetup>(cx).is_some()
+    try_context::<RuntimeSetup>(cx).is_some()
 }
 
 #[layout("/")]
@@ -543,7 +543,7 @@ pub(super) async fn jump(
 }
 
 #[component]
-async fn banner(notice: Option<Notice>) -> Result<impl View> {
+async fn banner(cx: &Cx, notice: Option<Notice>) -> Result<impl View> {
     Ok(view! {
         match notice {
             Some(n) => <p class=(class!("notice", "error" if n.is_error())) role="status">(n.text())</p>,
@@ -554,6 +554,7 @@ async fn banner(notice: Option<Notice>) -> Result<impl View> {
 
 #[component]
 pub(super) async fn shell(
+    cx: &Cx,
     page: Option<Page>,
     name: &str,
     me: Option<User>,
@@ -602,7 +603,7 @@ pub(super) async fn shell(
 }
 
 #[component]
-async fn filter_bar(filters: Filters) -> Result<impl View> {
+async fn filter_bar(cx: &Cx, filters: Filters) -> Result<impl View> {
     Ok(view! {
         <nav class="filters" aria-label="filters">
             <div class="group" role="group" aria-label="range">
@@ -622,6 +623,7 @@ async fn filter_bar(filters: Filters) -> Result<impl View> {
 
 #[component]
 pub(super) async fn panel(
+    cx: &Cx,
     #[default] title: &str,
     #[default] note: &str,
     #[default] wide: bool,
@@ -639,6 +641,7 @@ pub(super) async fn panel(
 
 #[component]
 pub(super) async fn field(
+    cx: &Cx,
     label: &str,
     name: &str,
     kind: &str,
@@ -659,6 +662,7 @@ pub(super) async fn field(
 
 #[component]
 pub(super) async fn dropdown(
+    cx: &Cx,
     name: &str,
     current: &str,
     options: &[(String, String)],
@@ -686,6 +690,7 @@ pub(super) async fn dropdown(
 
 #[component]
 pub(super) async fn check(
+    cx: &Cx,
     name: &str,
     label: &str,
     #[default] checked: bool,
@@ -700,7 +705,7 @@ pub(super) async fn check(
 }
 
 #[component]
-async fn login_page(notice: Option<Notice>) -> Result<impl View> {
+async fn login_page(cx: &Cx, notice: Option<Notice>) -> Result<impl View> {
     Ok(view! {
         shell(
             page: None,
@@ -719,7 +724,7 @@ async fn login_page(notice: Option<Notice>) -> Result<impl View> {
 }
 
 #[component]
-async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl View> {
+async fn stats_page(cx: &Cx, board: StatsBoard, notice: Option<Notice>) -> Result<impl View> {
     let top = board.stats.days.iter().map(|d| d.plays).max().unwrap_or(0);
     let chart_title = format!("plays per {}", board.range.unit());
     let widths: Vec<String> = board.stats.days.iter().map(|d| bar(d.plays, top)).collect();
@@ -835,14 +840,20 @@ async fn stats_page(board: StatsBoard, notice: Option<Notice>) -> Result<impl Vi
 }
 
 #[component]
-async fn tile(label: &str, value: String) -> Result<impl View> {
+async fn tile(cx: &Cx, label: &str, value: String) -> Result<impl View> {
     Ok(view! {
         <div class="tile"><dt>(label)</dt><dd>(value)</dd></div>
     })
 }
 
 #[component]
-async fn ranked_list(title: &str, kind: &str, items: &[Ranked], links: bool) -> Result<impl View> {
+async fn ranked_list(
+    cx: &Cx,
+    title: &str,
+    kind: &str,
+    items: &[Ranked],
+    links: bool,
+) -> Result<impl View> {
     Ok(view! {
         panel(
             title: title,
@@ -873,7 +884,13 @@ async fn ranked_list(title: &str, kind: &str, items: &[Ranked], links: bool) -> 
 }
 
 #[component]
-async fn recent_list(items: &[Recent], everyone: bool, tz: i64, links: bool) -> Result<impl View> {
+async fn recent_list(
+    cx: &Cx,
+    items: &[Recent],
+    everyone: bool,
+    tz: i64,
+    links: bool,
+) -> Result<impl View> {
     Ok(view! {
         panel(
             title: "recent plays",
@@ -897,7 +914,7 @@ async fn recent_list(items: &[Recent], everyone: bool, tz: i64, links: bool) -> 
 }
 
 #[component]
-async fn account_view(board: AccountBoard, notice: Option<Notice>) -> Result<impl View> {
+async fn account_view(cx: &Cx, board: AccountBoard, notice: Option<Notice>) -> Result<impl View> {
     let rate = board.me.max_bit_rate.to_string();
     Ok(view! {
         shell(
@@ -934,6 +951,20 @@ async fn account_view(board: AccountBoard, notice: Option<Notice>) -> Result<imp
                         <button>"link"</button>
                     </form>,
                     (None, false) => <p class="muted">"not configured on this server"</p>,
+                }
+            )
+            panel(
+                title: "listenbrainz, koito, maloja",
+                match &board.account.listenbrainz {
+                    Some(url) => <form method="post" action="/account/listenbrainz/unlink">
+                        <span>"linked to " <strong>(crate::listenbrainz::host(url))</strong></span>
+                        <button class="ghost">"unlink"</button>
+                    </form>,
+                    None => <form method="post" action="/account/listenbrainz/link">
+                        field(label: "server url", name: "url", kind: "text", auto: "off", placeholder: "https://api.listenbrainz.org")
+                        field(label: "user token", name: "token", kind: "password", auto: "off", required: true)
+                        <button>"link"</button>
+                    </form>,
                 }
             )
             if board.me.can_keys() {
@@ -979,7 +1010,7 @@ async fn account_view(board: AccountBoard, notice: Option<Notice>) -> Result<imp
 }
 
 #[component]
-async fn users_view(me: User, admin: Admin, notice: Option<Notice>) -> Result<impl View> {
+async fn users_view(cx: &Cx, me: User, admin: Admin, notice: Option<Notice>) -> Result<impl View> {
     Ok(view! {
         shell(
             page: Some(Page::Users),
@@ -1011,7 +1042,7 @@ async fn users_view(me: User, admin: Admin, notice: Option<Notice>) -> Result<im
 }
 
 #[component]
-async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl View> {
+async fn server_view(cx: &Cx, board: ServerBoard, notice: Option<Notice>) -> Result<impl View> {
     Ok(view! {
         shell(
             page: Some(Page::Server),
@@ -1066,6 +1097,7 @@ async fn server_view(board: ServerBoard, notice: Option<Notice>) -> Result<impl 
 
 #[component]
 async fn member_row(
+    cx: &Cx,
     member: &data::Member,
     me: &str,
     libraries: &[crate::db::libraries::Library],
