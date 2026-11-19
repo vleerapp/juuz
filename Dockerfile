@@ -1,7 +1,7 @@
 FROM rust:1.99-bookworm AS build
 WORKDIR /src
-RUN cargo install topcoat-cli --version 0.11.0 --locked
 COPY Cargo.toml Cargo.lock ./
+RUN cargo install topcoat-cli --locked --version "$(sed -n '/^name = "topcoat"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)"
 COPY migrations ./migrations
 COPY src ./src
 COPY web ./web
