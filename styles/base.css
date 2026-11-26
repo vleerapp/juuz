@@ -1,0 +1,62 @@
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 0s;
+}
+
+@font-face {
+  font-family: "Departure Mono";
+  src: url("/departure-mono.woff2") format("woff2");
+  font-display: block;
+}
+
+:root {
+  --bg: #121212;
+  --surface: #1a1a1a;
+  --text: #e6e6e6;
+  --text-secondary: #a6a6a6;
+  --text-muted: #808080;
+  --accent: #00c203;
+  --accent-surface: color-mix(in srgb, var(--accent) 50%, white);
+  --danger: #ff1a00;
+  --tint: #ffffff0d;
+  --tint-hover: #ffffff1a;
+  --ch: 0.6363636364em;
+  --gap: calc(2 * var(--ch));
+  --field: calc(48 * var(--ch));
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  font: inherit;
+}
+
+html {
+  background: var(--bg);
+  color: var(--text);
+  font: 1rem "Departure Mono";
+  line-height: 1.4rem;
+  font-variant-ligatures: none;
+  font-kerning: none;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) var(--bg);
+}
+
+[hidden] {
+  display: none;
+}
+
+::selection {
+  background: var(--text);
+  color: var(--bg);
+}
+

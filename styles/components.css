@@ -1,0 +1,475 @@
+small,
+.caption,
+.muted,
+.badge {
+  color: var(--text-secondary);
+}
+
+.error {
+  color: var(--danger);
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rlh;
+  width: min(100%, calc(var(--w, 48) * var(--ch)));
+}
+
+header form {
+  width: auto;
+}
+
+.guest form {
+  width: 100%;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+
+  &.check {
+    flex-direction: row;
+    gap: var(--ch);
+    width: fit-content;
+    cursor: pointer;
+
+    &:has(:disabled) {
+      color: var(--text-secondary);
+      cursor: default;
+    }
+
+    &:hover input {
+      &:not(:checked, :disabled) {
+        background: var(--tint-hover);
+      }
+
+      &:checked:not(:disabled) {
+        background: var(--accent-surface);
+      }
+    }
+  }
+}
+
+button {
+  align-self: flex-start;
+  padding-inline: var(--ch);
+  background: var(--tint);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+
+  &:hover {
+    background: var(--tint-hover);
+  }
+
+  &.ghost {
+    color: var(--text-secondary);
+  }
+
+  &.danger {
+    color: var(--danger);
+  }
+}
+
+input:not([type="checkbox"]) {
+  appearance: none;
+  border-radius: 0;
+  padding-inline: var(--ch);
+  background: var(--tint);
+  caret-color: var(--text);
+  caret-shape: block;
+  user-select: none;
+
+  &:hover,
+  &:focus {
+    background: var(--tint-hover);
+  }
+
+  &::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.6;
+  }
+}
+
+html[data-caret] input {
+  caret-color: transparent;
+}
+
+:where(button, select, textarea) {
+  border-radius: 0;
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  flex: none;
+  width: 1rlh;
+  height: 1rlh;
+  background: var(--tint);
+  cursor: pointer;
+  user-select: none;
+
+  &:checked {
+    background: var(--accent);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+code {
+  display: block;
+  padding-inline: var(--ch);
+  background: var(--tint);
+  color: var(--accent);
+  overflow-wrap: anywhere;
+  user-select: all;
+
+  &[data-copied]::after {
+    content: " (copied)";
+  }
+}
+
+:is(summary, code, input[type="checkbox"]):focus-visible {
+  background: var(--text) !important;
+  color: var(--bg) !important;
+  filter: none !important;
+}
+
+:where(a, button, [data-rename-open], .slider):focus-visible {
+  position: relative;
+}
+
+:is(
+  :is(a, button:not(.face), [data-rename-open], .slider):focus-visible:not(
+      .current,
+      [aria-selected="true"],
+      [aria-pressed="true"],
+      [aria-current="true"],
+      .thumb,
+      .slider,
+      .player button.icon:is(.on, [aria-expanded="true"]),
+      .tile:is(:has([aria-current="true"]), [data-picked]) .edit
+    ),
+  .tile:has(.face:focus-visible):not(:has([aria-current="true"]), [data-picked])
+)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: var(--text);
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+
+:is(
+  nav a.current,
+  .options button[aria-selected="true"],
+  [aria-pressed="true"],
+  .popup .item[aria-current="true"]
+):is(:hover, :focus-visible),
+.tile:is(:has([aria-current="true"]), [data-picked]):is(
+    :hover,
+    :has(.face:focus-visible)
+  ) {
+  background: var(--accent-surface) !important;
+  color: var(--bg) !important;
+  filter: none !important;
+}
+
+.tile:is(:has([aria-current="true"]), [data-picked])
+  .edit:is(:hover, :focus-visible) {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+}
+
+input[type="checkbox"]:checked:focus-visible {
+  background: var(--accent-surface) !important;
+  color: var(--bg) !important;
+}
+
+.group {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+ol {
+  counter-reset: rank;
+
+  li::before {
+    content: counter(rank);
+    counter-increment: rank;
+    flex: none;
+    width: calc(2 * var(--ch));
+    color: var(--text-secondary);
+  }
+}
+
+li {
+  display: flex;
+  gap: 1rlh var(--gap);
+}
+
+.ranked {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: var(--gap);
+
+  li {
+    display: contents;
+  }
+
+  li::before {
+    display: none;
+  }
+
+  .count {
+    color: var(--accent);
+  }
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  small {
+    margin-left: var(--gap);
+  }
+}
+
+.detail {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.day {
+  display: flex;
+  gap: 1rlh var(--gap);
+  white-space: pre;
+
+  .date {
+    flex: none;
+    width: calc(7 * var(--ch));
+    color: var(--text-secondary);
+  }
+
+  .bar {
+    position: relative;
+    flex: 0 1 calc(40 * var(--ch));
+    min-width: 0;
+    align-self: center;
+    height: 0.8rlh;
+
+    i {
+      position: absolute;
+      inset: 0 auto 0 0;
+      background: var(--accent);
+    }
+  }
+
+  .count {
+    flex: none;
+    width: calc(3 * var(--ch));
+    text-align: right;
+  }
+}
+
+.dial {
+  position: relative;
+  width: min(70%, calc(30 * var(--ch)));
+  margin: 0 auto;
+  padding: 1.4rlh 3ch;
+
+  .ring {
+    position: relative;
+    aspect-ratio: 1;
+  }
+
+  i {
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+  }
+
+  .peak {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+
+    small {
+      color: var(--text-secondary);
+    }
+  }
+
+  .mark {
+    position: absolute;
+    font-weight: normal;
+    color: var(--text-secondary);
+    transform: translate(-50%, -50%);
+
+    &.top {
+      top: 0.8rlh;
+      left: 50%;
+    }
+
+    &.bottom {
+      top: calc(100% - 0.8rlh);
+      left: 50%;
+    }
+
+    &.left {
+      top: 50%;
+      left: 1.75ch;
+    }
+
+    &.right {
+      top: 50%;
+      left: calc(100% - 1.75ch);
+    }
+  }
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, calc(18 * var(--ch)));
+  gap: 1rlh var(--gap);
+
+  [data-n="1"] & {
+    grid-template-columns: repeat(auto-fill, calc(14 * var(--ch)));
+  }
+}
+
+.tile {
+  display: flex;
+  flex-direction: column-reverse;
+
+  dt {
+    color: var(--text-secondary);
+  }
+
+  dd {
+    overflow: hidden;
+    font-size: 2em;
+    line-height: 2rlh;
+    white-space: nowrap;
+
+    [data-n="1"] & {
+      font-size: 1em;
+      line-height: 1rlh;
+    }
+  }
+}
+
+.facts {
+  div {
+    display: flex;
+    gap: 1rlh var(--gap);
+  }
+
+  dt {
+    flex: none;
+    width: calc(16 * var(--ch));
+    color: var(--text-secondary);
+  }
+
+  dd {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.members {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+summary {
+  display: flex;
+  gap: 1rlh var(--gap);
+  padding-inline: var(--ch);
+  background: var(--tint);
+  list-style: none;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--tint-hover);
+  }
+
+  &::-webkit-details-marker {
+    display: none;
+  }
+
+  &::after {
+    content: "+";
+    color: var(--accent);
+  }
+
+  details[open] > &::after {
+    content: "-";
+  }
+
+  small {
+    margin-left: auto;
+  }
+}
+
+.fold {
+  display: flex;
+  flex-direction: column;
+  gap: 1rlh;
+  padding: 1rlh 0 1rlh calc(2 * var(--ch));
+}
+
+.roles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, calc(18 * var(--ch)));
+  gap: 2px;
+}
+
+.caret {
+  position: absolute;
+  z-index: 10;
+  top: 1px;
+  width: var(--ch);
+  height: calc(1rlh - 2px);
+  background: var(--text);
+  mix-blend-mode: difference;
+  pointer-events: none;
+  animation: blink 1.1s steps(1) infinite;
+  user-select: none;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+.caret[data-inverse] {
+  background: rgb(from var(--text) calc(255 - r) calc(255 - g) calc(255 - b));
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+

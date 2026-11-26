@@ -1,0 +1,102 @@
+@media (max-width: 560px) {
+  .player .now {
+    cursor: pointer;
+  }
+
+  .player[data-expanded] {
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    padding: calc(var(--gap) + env(safe-area-inset-top, 0px)) var(--gap)
+      calc(var(--gap) + env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+
+    .inner {
+      flex: 1;
+      height: auto;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "collapse collapse"
+        "now now"
+        "seek seek"
+        "elapsed total"
+        "controls controls"
+        "vol vol"
+        "tools tools";
+      align-content: center;
+      row-gap: 1rlh;
+    }
+
+    .collapse {
+      display: block;
+      grid-area: collapse;
+      justify-self: start;
+    }
+
+    .now {
+      grid-area: now;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 1rlh;
+      cursor: default;
+
+      .cover {
+        width: min(100%, 50vh);
+        height: auto;
+        margin-inline: auto;
+      }
+
+      .text {
+        align-items: center;
+        text-align: center;
+      }
+    }
+
+    .seek {
+      display: block;
+      grid-area: seek;
+    }
+
+    .elapsed {
+      display: block;
+      grid-area: elapsed;
+    }
+
+    .total {
+      display: block;
+      grid-area: total;
+      justify-self: end;
+    }
+
+    .controls {
+      grid-area: controls;
+      justify-content: center;
+      gap: calc(4 * var(--gap));
+    }
+
+    .vol {
+      display: flex;
+      grid-area: vol;
+    }
+
+    .tools {
+      grid-area: tools;
+      justify-content: center;
+      gap: calc(4 * var(--gap));
+    }
+
+    .popup {
+      position: fixed;
+      inset: auto var(--gap) calc(var(--gap) + env(safe-area-inset-bottom, 0px))
+        var(--gap);
+      width: auto;
+      max-height: 70vh;
+      z-index: 60;
+    }
+  }
+}
+
+.album-head .kind {
+  color: var(--accent);
+}
