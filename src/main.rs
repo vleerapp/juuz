@@ -6,7 +6,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
-use juuz::config::Config;
+use juuz::server::utils::config::Config;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 
     let cfg = Config::from_env()?;
     let listen = cfg.listen.clone();
-    let server = juuz::init(cfg)?;
+    let server = juuz::server::utils::state::init(cfg)?;
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
