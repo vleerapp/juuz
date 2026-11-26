@@ -308,9 +308,9 @@ pub fn child_json(s: &SongRow, ex: &Extras) -> Value {
     put_opt(&mut m, "year", s.year);
     put_opt(&mut m, "genre", genres.first().cloned());
     let cover = match (&s.cover_hash, &s.album_cover) {
-        (Some(c), Some(a)) if c == a => Some(s.album_id.clone()),
-        (Some(_), _) => Some(s.id.clone()),
-        (None, Some(_)) => Some(s.album_id.clone()),
+        (Some(c), Some(a)) if c == a => Some(art_id(&s.album_id, Some(a))),
+        (Some(c), _) => Some(art_id(&s.id, Some(c))),
+        (None, Some(a)) => Some(art_id(&s.album_id, Some(a))),
         (None, None) => None,
     };
     put_opt(&mut m, "coverArt", cover);
@@ -500,7 +500,7 @@ pub fn album_json(a: &AlbumRow, ex: &AlbumExtras) -> Value {
     put_opt(
         &mut m,
         "coverArt",
-        a.cover_hash.as_ref().map(|_| a.id.clone()),
+        a.cover_hash.as_deref().map(|h| art_id(&a.id, Some(h))),
     );
     put(&mut m, "songCount", a.song_count);
     put(&mut m, "duration", a.duration_ms / 1000);
@@ -563,7 +563,7 @@ pub fn album_child_json(a: &AlbumRow, ex: &AlbumExtras) -> Value {
     put_opt(
         &mut m,
         "coverArt",
-        a.cover_hash.as_ref().map(|_| a.id.clone()),
+        a.cover_hash.as_deref().map(|h| art_id(&a.id, Some(h))),
     );
     put(&mut m, "playCount", a.play_count);
     put(&mut m, "created", iso(a.created_at));
@@ -585,6 +585,25 @@ pub struct ArtistRow {
     pub starred_at: Option<i64>,
     pub rating: Option<i64>,
     pub has_image: bool,
+    pub image_hash: Option<String>,
+}
+
+pub fn art_id(id: &str, hash: Option<&str>) -> String {
+    match hash {
+        Some(h) if h.len() >= 8 && h.is_char_boundary(8) => format!("{id}_{}", &h[..8]),
+        _ => id.to_string(),
+    }
+}
+
+pub fn split_art_id(id: &str) -> (&str, bool) {
+    match id.rsplit_once('_') {
+        Some((base, v))
+            if !base.is_empty() && v.len() == 8 && v.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            (base, true)
+        }
+        _ => (id, false),
+    }
 }
 
 pub const ARTIST_SELECT: &str = concat!(
@@ -593,7 +612,7 @@ pub const ARTIST_SELECT: &str = concat!(
         WHERE aa.artist_id = ar.id AND ",
     visible!("aal.library_id"),
     "), st.starred_at, rt.rating,
-    ar.image_path IS NOT NULL
+    ar.image_path IS NOT NULL, CASE WHEN ar.image_path IS NOT NULL THEN ar.image_hash END
     FROM artists ar JOIN (SELECT 1) vis ON ",
     artist_visible!("ar.id"),
     "
@@ -612,6 +631,7 @@ fn map_artist(r: &Row) -> rusqlite::Result<ArtistRow> {
         starred_at: r.get(6)?,
         rating: r.get(7)?,
         has_image: r.get(8)?,
+        image_hash: r.get(9)?,
     })
 }
 
@@ -652,7 +672,7 @@ pub fn artist_json(a: &ArtistRow) -> Value {
     put_opt(
         &mut m,
         "coverArt",
-        (a.album_count > 0 || a.has_image).then(|| a.id.clone()),
+        (a.album_count > 0 || a.has_image).then(|| art_id(&a.id, a.image_hash.as_deref())),
     );
     put(&mut m, "albumCount", a.album_count);
     put_opt(&mut m, "starred", a.starred_at.map(iso));

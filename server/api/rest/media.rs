@@ -496,7 +496,7 @@ fn resized(bytes: &[u8], size: u32) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn image_response(bytes: Vec<u8>, content_type: &str, etag: &str) -> Response {
+fn image_response(bytes: Vec<u8>, content_type: &str, etag: &str, versioned: bool) -> Response {
     let mut resp = Response::new(Body::from(bytes));
     let h = resp.headers_mut();
     harden(h);
@@ -505,7 +505,11 @@ fn image_response(bytes: Vec<u8>, content_type: &str, etag: &str) -> Response {
     }
     h.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
+        HeaderValue::from_static(if versioned {
+            "public, max-age=31536000, immutable"
+        } else {
+            "public, max-age=3600, must-revalidate"
+        }),
     );
     if let Ok(v) = HeaderValue::from_str(&format!("\"{etag}\"")) {
         h.insert(header::ETAG, v);
@@ -536,6 +540,8 @@ pub async fn cover_response(
     size: Option<u32>,
 ) -> Result<Response, ApiError> {
     let cache_dir = st.cfg.art_cache_dir();
+    let (base, versioned) = crate::server::utils::model::split_art_id(&id);
+    let id = base.to_string();
     let found = st.db.run(move |c| Ok(resolve_art(c, &uid, &id)?)).await?;
     let (hash, source) = found
         .filter(|(hash, _)| valid_hash(hash))
@@ -553,6 +559,7 @@ pub async fn cover_response(
                     bytes,
                     "image/jpeg",
                     &format!("{hash}-{size}"),
+                    versioned,
                 ));
             }
             let original = load_art(&source).ok_or_else(|| ApiError::not_found("cover art"))?;

@@ -392,7 +392,8 @@ async fn album_match_seeds_songs_and_fills_missing_artwork() {
     let album_id = song["albumId"].as_str().unwrap();
     let album = h.ok("getAlbum", &format!("id={album_id}")).await["album"].clone();
     assert_eq!(album["ommId"], "omm:album:2345678901");
-    assert_eq!(album["coverArt"], album_id);
+    let cover_id = album["coverArt"].as_str().unwrap();
+    assert!(cover_id.starts_with(&format!("{album_id}_")), "{cover_id}");
     assert_eq!(album["recordLabels"][0]["name"], "Virgin");
 
     let cover = h
@@ -400,9 +401,30 @@ async fn album_match_seeds_songs_and_fills_missing_artwork() {
         .await;
     assert_eq!(cover.headers["content-type"], "image/png");
     assert_eq!(cover.body, png);
+    assert!(
+        !cover.headers["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    let versioned = h
+        .get(&format!("/rest/getCoverArt?{}&id={cover_id}", h.auth()))
+        .await;
+    assert_eq!(versioned.body, png);
+    assert!(
+        versioned.headers["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
     let artist_id = song["artistId"].as_str().unwrap();
     let artist = h.ok("getArtist", &format!("id={artist_id}")).await["artist"].clone();
-    assert_eq!(artist["coverArt"], artist_id);
+    assert!(
+        artist["coverArt"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{artist_id}_"))
+    );
     let image = h
         .get(&format!("/rest/getCoverArt?{}&id={artist_id}", h.auth()))
         .await;
