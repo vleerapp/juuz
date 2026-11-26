@@ -76,6 +76,8 @@ pub struct Song {
     pub number: String,
     pub year: String,
     pub format: String,
+    pub starred: bool,
+    pub artist_id: String,
 }
 
 #[derive(Clone)]
@@ -137,6 +139,12 @@ pub fn song(row: SongRow, mut artists: Names) -> Song {
             .map(|g| format!("{g:.2}"))
             .unwrap_or_default(),
         cover: row.album_cover.is_some() || row.cover_hash.is_some(),
+        starred: row.starred_at.is_some(),
+        artist_id: artists
+            .iter()
+            .map(|(id, _)| id.clone())
+            .find(|id| !id.is_empty())
+            .unwrap_or_default(),
         id: row.id,
         album_id: row.album_id,
         title: row.title,

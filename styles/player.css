@@ -94,6 +94,20 @@
   }
 }
 
+.player [hidden] {
+  display: none !important;
+}
+
+.player button.icon {
+  position: relative;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: calc(-0.5 * var(--gap));
+  }
+}
+
 .player {
   button.icon.on,
   button.icon[aria-expanded="true"] {
@@ -102,7 +116,7 @@
     &:hover,
     &:focus-visible {
       color: var(--accent-surface);
-      background: var(--tint-hover);
+      background: none;
     }
   }
 
@@ -117,20 +131,102 @@
     gap: var(--gap);
   }
 
+  .now .star {
+    margin-inline-start: auto;
+  }
+
+  .now > .text {
+    touch-action: pan-y;
+  }
+
+  .popup[data-panel="lyrics"] {
+    gap: 0;
+  }
+
+  .lyrics {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rlh;
+  }
+
+  .lyrics .line {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 0.25rlh 0;
+    border: 0;
+    background: none;
+    color: var(--text-secondary);
+    font: inherit;
+    line-height: 1rlh;
+    text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .lyrics[data-synced] .line {
+    color: var(--text);
+    opacity: 0.5;
+    cursor: pointer;
+    filter: blur(0px);
+    will-change: filter, opacity;
+    transition:
+      opacity 0.3s,
+      filter 0.3s;
+
+    &:hover {
+      background: none;
+    }
+
+    .secondary {
+      display: block;
+      opacity: 0.7;
+    }
+
+    &[data-words] .w {
+      background-image: linear-gradient(
+        90deg,
+        var(--text) var(--p, 100%),
+        var(--text-muted) var(--p, 100%)
+      );
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+  }
+
+  .lyrics .line.gap {
+    display: flex;
+    gap: var(--ch);
+    padding-block: 0.5rlh;
+
+    .dot {
+      width: var(--ch);
+      height: var(--ch);
+      background: var(--text);
+      opacity: 0.25;
+    }
+  }
+
+  .popup .empty {
+    margin: 0;
+  }
+
   .popup {
     position: absolute;
     z-index: 30;
-    inset: auto var(--gap) calc(100% + 0.5rlh) auto;
+    inset: auto var(--gap) calc(100% + var(--gap)) auto;
     display: flex;
     flex-direction: column;
     gap: 0.5rlh;
     width: min(calc(60 * var(--ch)), calc(100vw - 2 * var(--gap)));
     max-height: 60vh;
+    overflow-x: hidden;
     overflow-y: auto;
     padding: 1rlh var(--gap);
     scrollbar-width: thin;
     background: var(--surface);
-    box-shadow: inset 0 0 0 1px var(--tint-hover);
+    border: 1px solid var(--tint-hover);
 
     &[hidden] {
       display: none;

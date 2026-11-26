@@ -183,7 +183,8 @@ html.reordering * {
   justify-content: flex-end;
 }
 
-.player .collapse {
+.player .collapse,
+.player .sub {
   display: none;
 }
 

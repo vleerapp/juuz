@@ -40,7 +40,7 @@ pub async fn song_row(
             }
             <span class="c-cover">
                 if play {
-                    <button class="thumb" data-play=(song.id.as_str()) data-title=(song.title.as_str()) data-artist=(song.artist.as_str()) data-album=(song.album.as_str()) data-art=(song.album_id.as_str()) data-cover=(cover_flag) data-gain=(song.gain.as_str()) aria-label="play">
+                    <button class="thumb" data-play=(song.id.as_str()) data-title=(song.title.as_str()) data-artist=(song.artist.as_str()) data-album=(song.album.as_str()) data-art=(song.album_id.as_str()) data-cover=(cover_flag) data-gain=(song.gain.as_str()) data-album-id=(song.album_id.as_str()) data-artist-id=(song.artist_id.as_str()) data-starred=(if song.starred { "1" } else { "" }) aria-label="play">
                         cover(id: song.album_id.as_str(), has: song.cover)
                         <span class="glyph">icon(data: PLAY_ICON)</span>
                     </button>

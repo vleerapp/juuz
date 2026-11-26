@@ -23,6 +23,13 @@
   audio.preload = "auto";
   let queue = [];
   let index = -1;
+  let shuffle = false;
+  let repeat = "off";
+  let order = [];
+  try {
+    shuffle = localStorage.getItem("juuz.shuffle") === "1";
+    repeat = ["off", "all", "one"].includes(localStorage.getItem("juuz.repeat")) ? localStorage.getItem("juuz.repeat") : "off";
+  } catch {}
   let bar = null;
   let els = {};
   let volume = 0.5;
@@ -129,16 +136,21 @@
     inner.innerHTML =
       '<button class="ghost collapse" type="button" data-act="collapse" aria-label="minimize player">close</button>' +
       '<div class="now"><img class="cover" alt=""><span class="cover blank"></span>' +
-      '<div class="text"><strong class="title"></strong><span class="meta muted"></span></div></div>' +
+      '<div class="text"><strong class="title"></strong><span class="meta muted"></span>' +
+      '<span class="sub muted"><a class="artist-link" hidden></a><a class="album-link" hidden></a></span></div>' +
+      `<button class="icon star" data-act="star" aria-label="like" aria-pressed="false" hidden>${icon("heart")}</button></div>` +
       '<div class="controls">' +
+      `<button class="icon mode" data-act="shuffle" aria-label="shuffle" aria-pressed="false">${icon("shuffle")}</button>` +
       `<button class="icon" data-act="previous" aria-label="previous">${icon("previous")}</button>` +
-      '<button class="icon" data-act="toggle" aria-label="play or pause"></button>' +
+      '<button class="icon play" data-act="toggle" aria-label="play or pause"></button>' +
       `<button class="icon" data-act="next" aria-label="next">${icon("next")}</button>` +
+      `<button class="icon mode" data-act="repeat" aria-label="repeat" aria-pressed="false">${icon("repeat")}</button>` +
       "</div>" +
       '<small class="elapsed muted">0:00</small>' +
       '<small class="total muted">0:00</small>' +
-      '<div class="vol"><button class="icon" data-act="mute" aria-label="mute"></button></div>' +
+      `<div class="vol"><button class="icon" data-act="mute" aria-label="mute"></button></div>` +
       '<div class="tools">' +
+      `<button class="icon" data-act="lyrics" aria-label="lyrics">${icon("lyrics")}</button>` +
       `<button class="icon" data-act="queue" aria-label="queue">${icon("queue")}</button>` +
       (hasRemote() ? `<button class="icon" data-act="output" aria-label="output">${icon("output")}</button>` : "") +
       "</div>";
@@ -167,6 +179,13 @@
       mute: inner.querySelector('[data-act="mute"]'),
       queue: inner.querySelector('[data-act="queue"]'),
       output: inner.querySelector('[data-act="output"]'),
+      lyrics: inner.querySelector('[data-act="lyrics"]'),
+      star: inner.querySelector('[data-act="star"]'),
+      shuffle: inner.querySelector('[data-act="shuffle"]'),
+      repeat: inner.querySelector('[data-act="repeat"]'),
+      sub: inner.querySelector(".sub"),
+      artistLink: inner.querySelector(".artist-link"),
+      albumLink: inner.querySelector(".album-link"),
       seek,
       vol,
     };
@@ -176,15 +195,30 @@
       if (localStorage.getItem("juuz.volume") !== null && saved >= 0 && saved <= 1) volume = saved;
     } catch {}
     setVolume(volume, true);
+    showModes();
     bar.addEventListener("click", (e) => {
       const act = e.target.closest("[data-act]")?.dataset.act;
+      const mini = !bar.hasAttribute("data-expanded") && narrow.matches;
+      if (mini && !act && !e.target.closest(".slider, .popup")) {
+        e.preventDefault();
+        expandPlayer();
+        return;
+      }
+      if (panel && !act && bar.hasAttribute("data-expanded") && !e.target.closest(".popup, .slider, button, a")) {
+        closePanels();
+        return;
+      }
       if (act === "toggle") toggle();
       if (act === "next") step(1);
       if (act === "previous") previous();
       if (act === "collapse") collapsePlayer();
-      else if (!act && !bar.hasAttribute("data-expanded") && narrow.matches && e.target.closest(".now")) expandPlayer();
       if (act === "queue") togglePanel("queue");
       if (act === "output") togglePanel("output");
+      if (act === "lyrics") togglePanel("lyrics");
+      if (act === "star") toggleStar();
+      if (act === "shuffle") setShuffle(!shuffle);
+      if (act === "repeat") setRepeat(repeat === "off" ? "all" : repeat === "all" ? "one" : "off");
+      if (e.target.closest(".sub a") && bar.hasAttribute("data-expanded")) collapsePlayer();
       if (act === "mute") {
         if (volume > 0) {
           beforeMute = volume;
@@ -202,12 +236,186 @@
     closePanels();
     bar.setAttribute("data-expanded", "");
     document.documentElement.setAttribute("data-player-open", "");
+    if (remote) renderRemote();
+    else render();
+    measureSpacer();
   };
   const collapsePlayer = () => {
     closePanels();
     bar?.removeAttribute("data-expanded");
     document.documentElement.removeAttribute("data-player-open");
   };
+  const swipe = { y: 0, x: 0, on: false, text: null, sliding: false };
+  const SKIP = 60;
+  document.addEventListener(
+    "touchstart",
+    (e) => {
+      if (!bar || bar.hidden || !narrow.matches || e.touches.length !== 1) return;
+      const t = e.target;
+      if (!bar.contains(t) || t.closest(".slider, .popup")) return;
+      swipe.on = true;
+      swipe.y = e.touches[0].clientY;
+      swipe.x = e.touches[0].clientX;
+      swipe.text = t.closest(".now > .text");
+      swipe.sliding = false;
+    },
+    { passive: true },
+  );
+  document.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!swipe.on || !swipe.text || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - swipe.x;
+      const dy = e.touches[0].clientY - swipe.y;
+      if (!swipe.sliding && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) swipe.sliding = true;
+      if (!swipe.sliding) return;
+      swipe.text.style.transition = "none";
+      swipe.text.style.transform = `translateX(${dx}px)`;
+      swipe.text.style.opacity = String(Math.max(0.3, 1 - Math.abs(dx) / 240));
+    },
+    { passive: true },
+  );
+  document.addEventListener(
+    "touchend",
+    (e) => {
+      if (!swipe.on) return;
+      swipe.on = false;
+      const touch = e.changedTouches[0];
+      const dy = touch.clientY - swipe.y;
+      const dx = touch.clientX - swipe.x;
+      if (swipe.sliding && swipe.text) {
+        const text = swipe.text;
+        text.style.transition = "transform 0.2s, opacity 0.2s";
+        text.style.transform = "";
+        text.style.opacity = "";
+        swipe.text = null;
+        swipe.sliding = false;
+        if (Math.abs(dx) >= SKIP && Math.abs(dx) > Math.abs(dy)) {
+          if (dx < 0) step(1);
+          else previous();
+        }
+        return;
+      }
+      swipe.text = null;
+      if (Math.abs(dx) > Math.abs(dy)) return;
+      const expanded = bar.hasAttribute("data-expanded");
+      if (!expanded && dy < -40) expandPlayer();
+      if (expanded && dy > 80) collapsePlayer();
+    },
+    { passive: true },
+  );
+  document.addEventListener(
+    "touchcancel",
+    () => {
+      if (swipe.text) {
+        swipe.text.style.transform = "";
+        swipe.text.style.opacity = "";
+      }
+      swipe.on = false;
+      swipe.text = null;
+      swipe.sliding = false;
+    },
+    { passive: true },
+  );
+
+  const showModes = () => {
+    if (!els.shuffle) return;
+    els.shuffle.setAttribute("aria-pressed", String(shuffle));
+    els.shuffle.classList.toggle("on", shuffle);
+    els.repeat.setAttribute("aria-pressed", String(repeat !== "off"));
+    els.repeat.classList.toggle("on", repeat !== "off");
+    els.repeat.innerHTML = icon(repeat === "one" ? "repeat-one" : "repeat");
+    els.repeat.setAttribute("aria-label", `repeat ${repeat}`);
+    els.shuffle.disabled = remote;
+    els.repeat.disabled = remote;
+  };
+  const setShuffle = (on) => {
+    shuffle = on;
+    order = [];
+    try {
+      localStorage.setItem("juuz.shuffle", on ? "1" : "0");
+    } catch {}
+    showModes();
+  };
+  const setRepeat = (mode) => {
+    repeat = mode;
+    try {
+      localStorage.setItem("juuz.repeat", mode);
+    } catch {}
+    showModes();
+  };
+  const shuffled = () => {
+    const ids = queue.map((s) => s.id);
+    const fresh = order.length !== ids.length || !ids.every((id) => order.includes(id));
+    if (fresh) {
+      const cur = queue[index]?.id;
+      const rest = ids.filter((id) => id !== cur);
+      for (let i = rest.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rest[i], rest[j]] = [rest[j], rest[i]];
+      }
+      order = cur === undefined ? rest : [cur, ...rest];
+    }
+    return order;
+  };
+  const nextIndex = (by) => {
+    if (!shuffle) return index + by;
+    const seq = shuffled();
+    const at = seq.indexOf(queue[index]?.id);
+    const to = at + by;
+    if (to < 0) return -1;
+    if (to >= seq.length) return queue.length;
+    return queue.findIndex((s) => s.id === seq[to]);
+  };
+
+  const showStar = () => {
+    const song = current();
+    if (!els.star || !song) return;
+    els.star.hidden = false;
+    els.star.innerHTML = icon(song.starred ? "heart-filled" : "heart");
+    els.star.setAttribute("aria-pressed", String(!!song.starred));
+    els.star.classList.toggle("on", !!song.starred);
+  };
+  const toggleStar = async () => {
+    const song = current();
+    if (!song) return;
+    const on = !song.starred;
+    song.starred = on;
+    showStar();
+    try {
+      const res = await fetch(`/star?id=${encodeURIComponent(song.id)}&on=${on}`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      document.querySelectorAll(`[data-play="${CSS.escape(song.id)}"]`).forEach((el) => {
+        el.dataset.starred = on ? "1" : "";
+      });
+      queue.forEach((s) => {
+        if (s.id === song.id) s.starred = on;
+      });
+    } catch {
+      song.starred = !on;
+      showStar();
+    }
+  };
+
+  const showDetails = (song) => {
+    els.meta.textContent = song.artist;
+    const artistHref = song.artistId ? `/?view=artists&artist=${encodeURIComponent(song.artistId)}` : "";
+    const albumHref = song.albumId ? `/?view=songs&status=all&album=${encodeURIComponent(song.albumId)}` : "";
+    els.artistLink.textContent = song.artist;
+    els.albumLink.textContent = song.album;
+    els.artistLink.hidden = !song.artist;
+    els.albumLink.hidden = !song.album;
+    if (artistHref) els.artistLink.setAttribute("href", artistHref);
+    else els.artistLink.removeAttribute("href");
+    if (albumHref) els.albumLink.setAttribute("href", albumHref);
+    else els.albumLink.removeAttribute("href");
+    showStar();
+    if (panel === "lyrics") renderLyrics();
+  };
+  const coverSize = () => (bar?.hasAttribute("data-expanded") ? 600 : 128);
   narrow.addEventListener("change", () => {
     if (!narrow.matches) collapsePlayer();
   });
@@ -258,11 +466,11 @@
     mount();
     bar.hidden = false;
     els.title.textContent = song.title;
-    els.meta.textContent = song.artist;
+    showDetails(song);
     els.toggle.innerHTML = icon(audio.paused ? "play" : "pause");
     if (song.cover) {
       showCover(true);
-      const src = artUrl(song, 128);
+      const src = artUrl(song, coverSize());
       if (!els.art.src.endsWith(src)) els.art.src = src;
     } else {
       showCover(false);
@@ -353,11 +561,17 @@
       else remoteCmd({ action: "skip", index: next });
       return;
     }
-    if (index + by >= queue.length) {
+    const to = nextIndex(by);
+    if (to >= queue.length) {
+      if (repeat === "all" && queue.length) {
+        order = [];
+        load(shuffle ? Math.floor(Math.random() * queue.length) : 0);
+        return;
+      }
       audio.pause();
       return;
     }
-    load(Math.max(0, index + by));
+    load(Math.max(0, to));
   };
 
   const previous = () => {
@@ -419,6 +633,9 @@
     art: el.dataset.art || "",
     cover: el.dataset.cover === "1",
     gain: el.dataset.gain ? Number(el.dataset.gain) : null,
+    albumId: el.dataset.albumId || el.dataset.art || "",
+    artistId: el.dataset.artistId || "",
+    starred: el.dataset.starred === "1",
   });
 
   const playFrom = async (url) => {
@@ -466,6 +683,9 @@
     cover: !!s.coverArt,
     gain: null,
     duration: Number(s.duration) || 0,
+    albumId: s.albumId || "",
+    artistId: s.artistId || "",
+    starred: !!s.starred,
   });
   const remoteSong = () => remoteState?.songs[remoteState.index];
   const remotePosition = () => {
@@ -534,6 +754,9 @@
     bar.hidden = false;
     els.title.textContent = "nothing playing";
     els.meta.textContent = meta || "";
+    els.artistLink.hidden = true;
+    els.albumLink.hidden = true;
+    els.star.hidden = true;
     els.toggle.innerHTML = icon("play");
     showCover(false);
     els.elapsed.textContent = "0:00";
@@ -551,11 +774,11 @@
     mount();
     bar.hidden = false;
     els.title.textContent = song.title;
-    els.meta.textContent = song.artist;
+    showDetails(song);
     els.toggle.innerHTML = icon(remoteState.playing ? "pause" : "play");
     if (song.cover) {
       showCover(true);
-      const src = artUrl(song, 128);
+      const src = artUrl(song, coverSize());
       if (!els.art.src.endsWith(src)) els.art.src = src;
     } else {
       showCover(false);
@@ -571,6 +794,7 @@
     els.elapsed.textContent = clock(at);
     els.total.textContent = clock(song?.duration || 0);
     if (!seeking && song?.duration) els.seek.set(at / song.duration);
+    if (remoteState.playing) startSeekLoop();
   };
 
   window.juuzSyncWanted = () => remote;
@@ -583,6 +807,7 @@
     if (on === remote) return;
     remote = on;
     if (on) window.dispatchEvent(new Event("juuz:syncwanted"));
+    showModes();
     if (on) {
       audio.pause();
       closeOpen(position(), false);
@@ -642,6 +867,13 @@
       el.dataset.panel = name;
       el.hidden = true;
       panels[name] = el;
+      if (name === "lyrics") {
+        for (const type of ["wheel", "touchmove"]) el.addEventListener(type, () => detachLyrics(), { passive: true });
+        el.addEventListener("pointerleave", () => resyncLyrics());
+        el.addEventListener("touchend", () => {
+          lyricDetached = Math.min(lyricDetached, Date.now() + 3000);
+        }, { passive: true });
+      }
     }
     mount();
     if (!panels[name].isConnected) bar.append(panels[name]);
@@ -649,21 +881,267 @@
   };
   const closePanels = () => {
     panel = null;
+    if (bar) delete bar.dataset.panel;
     for (const el of Object.values(panels)) el.hidden = true;
-    for (const b of [els.queue, els.output]) b?.removeAttribute("aria-expanded");
+    for (const b of [els.queue, els.output, els.lyrics]) b?.removeAttribute("aria-expanded");
   };
   const togglePanel = (name) => {
     if (panel === name) return closePanels();
     closePanels();
+    measureSpacer();
     panel = name;
     panelEl(name).hidden = false;
-    (name === "queue" ? els.queue : els.output)?.setAttribute("aria-expanded", "true");
+    bar.dataset.panel = name;
+    placeLyrics();
+    els[name]?.setAttribute("aria-expanded", "true");
     if (name === "queue") renderQueue(true);
+    else if (name === "lyrics") renderLyrics();
     else if (outputs) renderOutputs();
     else loadOutputs();
   };
   document.addEventListener("click", (e) => {
     if (panel && bar && !bar.contains(e.target)) closePanels();
+  });
+
+  const measureSpacer = () => {
+    if (!bar?.hasAttribute("data-expanded") || bar.dataset.panel) return;
+    const above = els.elapsed.getBoundingClientRect().bottom;
+    const below = els.toggle.closest(".controls").getBoundingClientRect().top;
+    if (below > above) bar.style.setProperty("--spacer", `${Math.round(below - above)}px`);
+  };
+  window.addEventListener("resize", () => {
+    if (!panel) measureSpacer();
+  });
+  const placeLyrics = () => {
+    for (const name of ["lyrics", "queue", "output"]) {
+      const el = panels[name];
+      if (!el) continue;
+      if (panel !== name || !bar.hasAttribute("data-expanded")) {
+        el.style.removeProperty("top");
+        el.style.removeProperty("height");
+        continue;
+      }
+      const top = Math.max(
+        ...[...bar.querySelectorAll(".now > .text, .now > .cover:not([hidden])")].map((e) => e.getBoundingClientRect().bottom),
+      );
+      const bottom = bar.querySelector(".inner > .seek").getBoundingClientRect().top;
+      el.style.top = `${Math.round(top)}px`;
+      el.style.height = `${Math.max(0, Math.round(bottom - top))}px`;
+    }
+  };
+  window.addEventListener("resize", placeLyrics);
+  const lyricsCache = new Map();
+  let lyricsFor = "";
+  const lyricsAt = () => (remote ? remotePosition() : audio.currentTime) * 1000;
+  let lyricLines = [];
+  let lyricRows = new Map();
+  const renderLyrics = async () => {
+    const song = current();
+    const el = panelEl("lyrics");
+    if (!song) {
+      el.replaceChildren(node("p", "muted empty", "nothing playing"));
+      return;
+    }
+    if (lyricsFor === song.id && el.childElementCount) return;
+    lyricsFor = song.id;
+    lyricLines = [];
+    lyricRows = new Map();
+    lyricLine = null;
+    el.replaceChildren(node("p", "muted empty", "loading lyrics"));
+    let data = lyricsCache.get(song.id);
+    if (!data) {
+      try {
+        const res = await fetch(`/lyrics?id=${encodeURIComponent(song.id)}`, { credentials: "same-origin" });
+        data = res.ok ? await res.json() : { synced: false, lines: [] };
+      } catch {
+        data = { synced: false, lines: [] };
+      }
+      lyricsCache.set(song.id, data);
+    }
+    if (lyricsFor !== song.id) return;
+    if (!data.lines.some((l) => l.text.trim())) {
+      el.replaceChildren(node("p", "muted empty", "no lyrics for this song"));
+      return;
+    }
+    const list = node("div", "lyrics");
+    if (!data.synced) {
+      data.lines.forEach((l, i, all) => {
+        if (!l.text.trim() && !(i > 0 && all[i - 1].text.trim())) return;
+        list.append(node("p", "line", l.text.trim() || "\u00a0"));
+      });
+      el.replaceChildren(list);
+      return;
+    }
+    list.setAttribute("data-synced", "");
+    const lines = data.lines;
+    lines.forEach((l, i) => {
+      if (!l.text && !l.gap) return;
+      const next = lines[i + 1]?.start;
+      const end = l.end ?? next ?? l.start + 5000;
+      let row;
+      if (l.gap) {
+        row = node("div", "line gap");
+        for (let k = 0; k < 3; k++) row.append(node("span", "dot"));
+      } else {
+        row = node("button", "line");
+        row.type = "button";
+        const main = node("span", "main");
+        if (l.words?.length) {
+          l.words.forEach((w, k) => {
+            const span = node("span", "w", w.text);
+            span.dataset.start = String(w.start);
+            span.dataset.end = String(l.words[k + 1]?.start ?? end);
+            main.append(span);
+          });
+          row.setAttribute("data-words", "");
+        } else {
+          main.textContent = l.text;
+        }
+        row.append(main);
+        if (l.secondary) row.append(node("span", "secondary", l.secondary));
+      }
+      row.dataset.start = String(l.start);
+      row.dataset.end = String(end);
+      lyricRows.set(i, row);
+      list.append(row);
+    });
+    lyricLines = lines;
+    lyricOrder = [...lyricRows.values()];
+    lyricHover = null;
+    list.addEventListener("pointerover", (e) => {
+      lyricHover = e.target.closest?.(".line") || null;
+    });
+    list.addEventListener("pointerleave", () => {
+      lyricHover = null;
+    });
+    el.replaceChildren(list);
+    highlightLyrics(true);
+  };
+  let lyricLine = null;
+  let lyricOrder = [];
+  let lyricHover = null;
+  let lyricDetached = 0;
+  const BLUR = 4;
+  const HAZE = 0.7;
+  const PIN = 0.3;
+  const focusOpacity = (index, focus) => {
+    if (focus < 0) return 0.5;
+    const distance = Math.abs(index - focus);
+    return distance === 0 ? 1 : Math.max(0.12, 0.55 - 0.1 * (distance - 1));
+  };
+  const hazeFor = (top, size, pin, height, neighbor) => {
+    if (top + size + neighbor < 0 || top - neighbor > height) return 0;
+    let travel = top - pin;
+    travel = travel >= 0 ? Math.max(travel, neighbor) : Math.min(travel, -neighbor);
+    const reach = travel >= 0 ? height - pin : Math.max(pin, height * PIN);
+    return Math.pow(Math.min(1, Math.abs(travel) / Math.max(1, reach)), HAZE);
+  };
+  const soften = () => {
+    const box = panels.lyrics;
+    if (!box || !lyricOrder.length) return;
+    const height = box.clientHeight;
+    const detached = Date.now() < lyricDetached;
+    const active = lyricLine ? lyricOrder.indexOf(lyricLine) : -1;
+    const hover = lyricHover ? lyricOrder.indexOf(lyricHover) : -1;
+    const neighbor = (lyricLine?.offsetHeight || 32) * 2;
+    const pinOf = (row) => Math.max(0, Math.min(height, row.offsetTop - box.scrollTop));
+    const activePin = lyricLine ? pinOf(lyricLine) : 0;
+    const hoverPin = hover >= 0 && hover !== active ? pinOf(lyricHover) : null;
+    lyricOrder.forEach((row, i) => {
+      let opacity = focusOpacity(i, active);
+      if (hover >= 0) opacity = Math.max(opacity, focusOpacity(i, hover));
+      let radius = 0;
+      if (!detached && i !== active && i !== hover) {
+        const top = row.offsetTop - box.scrollTop;
+        let haze = hazeFor(top, row.offsetHeight, activePin, height, neighbor);
+        if (hoverPin !== null) haze = Math.min(haze, hazeFor(top, row.offsetHeight, hoverPin, height, neighbor));
+        radius = BLUR * haze;
+      }
+      if (detached) opacity = Math.max(opacity, 0.55);
+      const o = opacity.toFixed(2);
+      const f = `blur(${radius > 0.1 ? radius.toFixed(2) : "0"}px)`;
+      if (row.style.opacity !== o) row.style.opacity = o;
+      if (row.style.filter !== f) row.style.filter = f;
+    });
+  };
+  const resyncLyrics = () => {
+    if (!lyricDetached) return;
+    lyricDetached = 0;
+    lyricHover = null;
+    const box = panels.lyrics;
+    if (!box || !lyricLine) return;
+    box.scrollTo({ top: Math.max(0, lyricLine.offsetTop - box.clientHeight / 3), behavior: "smooth" });
+  };
+  const detachLyrics = () => {
+    lyricDetached = Date.now() + 3000;
+  };
+  const activeLyric = (now) => {
+    let i = -1;
+    for (let k = 0; k < lyricLines.length; k++) {
+      if (lyricLines[k].start <= now) i = k;
+      else break;
+    }
+    if (i >= 0 && !lyricLines[i].text && !lyricLines[i].gap) i -= 1;
+    return i >= 0 ? lyricRows.get(i) || null : null;
+  };
+  const sweep = (row, now) => {
+    if (row.classList.contains("gap")) {
+      const s = Number(row.dataset.start);
+      const e = Number(row.dataset.end);
+      const progress = Math.max(0, Math.min(1, (now - s) / Math.max(1, e - s)));
+      row.querySelectorAll(".dot").forEach((dot, k) => {
+        dot.style.opacity = String(0.25 + 0.75 * Math.max(0, Math.min(1, progress * 3 - k)));
+      });
+      return;
+    }
+    if (!row.hasAttribute("data-words")) return;
+    for (const w of row.querySelectorAll(".w")) {
+      const s = Number(w.dataset.start);
+      const e = Number(w.dataset.end);
+      const progress = Math.max(0, Math.min(1, (now - s) / Math.max(1, e - s)));
+      w.style.setProperty("--p", `${(progress * 100).toFixed(1)}%`);
+    }
+  };
+  const highlightLyrics = (jump) => {
+    if (panel !== "lyrics" || !lyricLines.length) return;
+    const now = lyricsAt() + 150;
+    const hit = activeLyric(now);
+    if (hit) sweep(hit, now);
+    if (lyricDetached && Date.now() >= lyricDetached) resyncLyrics();
+    if (panels.lyrics?.querySelector(".lyrics[data-synced]")) soften();
+    if (hit === lyricLine && !jump) return;
+    if (lyricLine) {
+      lyricLine.classList.remove("on");
+      lyricLine.querySelectorAll(".w").forEach((w) => w.style.removeProperty("--p"));
+      lyricLine.querySelectorAll(".dot").forEach((d) => d.style.removeProperty("opacity"));
+    }
+    lyricLine = hit;
+    if (!hit) return;
+    hit.classList.add("on");
+    if (Date.now() < lyricDetached) return;
+    const box = panels.lyrics;
+    const top = hit.offsetTop - box.clientHeight / 3;
+    box.scrollTo({ top: Math.max(0, top), behavior: jump ? "auto" : "smooth" });
+  };
+  let lyricFrame = 0;
+  const lyricLoop = () => {
+    lyricFrame = 0;
+    if (panel !== "lyrics") return;
+    highlightLyrics(false);
+    lyricFrame = requestAnimationFrame(lyricLoop);
+  };
+  setInterval(() => {
+    if (panel === "lyrics" && !lyricFrame) lyricFrame = requestAnimationFrame(lyricLoop);
+  }, 250);
+  document.addEventListener("click", (e) => {
+    const line = e.target.closest?.(".popup[data-panel=lyrics] .line[data-start]");
+    if (!line) return;
+    const at = Number(line.dataset.start) / 1000;
+    if (remote) {
+      remoteCmd({ action: "skip", index: remoteState.index, offset: Math.floor(at) });
+    } else if (Number.isFinite(audio.duration)) {
+      audio.currentTime = at;
+    }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && panel) {
@@ -1634,12 +2112,33 @@
     }
   });
 
+  let seekFrame = 0;
+  const seekLoop = () => {
+    seekFrame = 0;
+    if (!bar || bar.hidden) return;
+    let frac = null;
+    if (remote) {
+      const song = remoteSong();
+      if (remoteState?.playing && song?.duration) frac = remotePosition() / song.duration;
+    } else if (!audio.paused && Number.isFinite(audio.duration) && audio.duration > 0) {
+      frac = audio.currentTime / audio.duration;
+    }
+    if (frac === null) return;
+    if (!seeking) els.seek.set(frac);
+    seekFrame = requestAnimationFrame(seekLoop);
+  };
+  const startSeekLoop = () => {
+    if (!seekFrame) seekFrame = requestAnimationFrame(seekLoop);
+  };
+  audio.addEventListener("playing", startSeekLoop);
+  audio.addEventListener("seeked", startSeekLoop);
   audio.addEventListener("timeupdate", () => {
     if (!bar) return;
     const d = audio.duration;
     els.elapsed.textContent = clock(audio.currentTime);
     els.total.textContent = clock(d);
     if (!seeking && Number.isFinite(d) && d > 0) els.seek.set(audio.currentTime / d);
+    if (!audio.paused) startSeekLoop();
     const song = current();
     if (song && !counted && Number.isFinite(d) && d > 0 && audio.currentTime >= Math.min(d / 2, 240)) {
       counted = true;
@@ -1671,7 +2170,8 @@
   });
   audio.addEventListener("ended", () => {
     closeOpen(Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : position(), false);
-    step(1);
+    if (repeat === "one") load(index);
+    else step(1);
   });
   audio.addEventListener("error", () => {
     loading = false;

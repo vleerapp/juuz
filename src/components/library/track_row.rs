@@ -31,7 +31,7 @@ pub async fn track_row(
         <div class="row">
             <span class="c-num">
                 if play {
-                    <button class="number" data-play=(song.id.as_str()) data-title=(song.title.as_str()) data-artist=(song.artist.as_str()) data-album=(song.album.as_str()) data-art=(song.album_id.as_str()) data-cover=(cover_flag) data-gain=(song.gain.as_str()) aria-label="play">
+                    <button class="number" data-play=(song.id.as_str()) data-title=(song.title.as_str()) data-artist=(song.artist.as_str()) data-album=(song.album.as_str()) data-art=(song.album_id.as_str()) data-cover=(cover_flag) data-gain=(song.gain.as_str()) data-album-id=(song.album_id.as_str()) data-artist-id=(song.artist_id.as_str()) data-starred=(if song.starred { "1" } else { "" }) aria-label="play">
                         <span class="n">(number.as_str())</span>
                         <span class="glyph">icon(data: PLAY_ICON)</span>
                     </button>
