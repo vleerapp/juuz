@@ -8,6 +8,32 @@
     gap: 2px var(--gap);
   }
 
+  .toolbar {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 10;
+    margin-top: calc(-1 * var(--gap));
+    padding-block: var(--gap) 0;
+    background: var(--bg);
+
+    &::before {
+      content: "";
+      position: absolute;
+      inset: 0 calc(-1 * var(--gap));
+      z-index: -1;
+      background: var(--bg);
+    }
+
+    &::after {
+      content: "";
+      position: absolute;
+      inset: 100% calc(-1 * var(--gap)) auto;
+      height: 1rlh;
+      background: linear-gradient(var(--bg), transparent);
+      pointer-events: none;
+    }
+  }
+
   .segments {
     flex-wrap: wrap;
     align-items: center;
