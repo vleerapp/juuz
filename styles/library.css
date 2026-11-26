@@ -257,8 +257,12 @@ button.icon {
   color: var(--text-secondary);
 
   &:hover {
-    background: var(--tint-hover);
     color: var(--text);
+  }
+
+  &,
+  &:is(:hover, :focus-visible, :active) {
+    background: none !important;
   }
 
   svg {
@@ -316,7 +320,7 @@ button.icon {
     flex-direction: column;
     gap: 2px;
     background: var(--surface);
-    box-shadow: inset 0 0 0 1px var(--tint-hover);
+    border: 1px solid var(--tint-hover);
   }
 
   .options button {

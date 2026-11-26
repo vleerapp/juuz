@@ -171,7 +171,7 @@ code {
 :is(
   nav a.current,
   .options button[aria-selected="true"],
-  [aria-pressed="true"],
+  [aria-pressed="true"]:not(button.icon),
   .popup .item[aria-current="true"]
 ):is(:hover, :focus-visible),
 .tile:is(:has([aria-current="true"]), [data-picked]):is(
