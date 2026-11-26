@@ -71,16 +71,3 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - run: cargo audit
-
-  docker:
-    name: Docker build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

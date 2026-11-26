@@ -1,0 +1,138 @@
+name: Build and Publish
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+        default: ""
+      tags:
+        description: Comma separated image tags
+        type: string
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      - name: Topcoat version
+        id: version
+        run: |
+          version="$(sed -n '/^name = "topcoat"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)"
+          echo "topcoat=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache topcoat-cli
+        id: topcoat
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/topcoat
+          key: topcoat-cli-${{ steps.version.outputs.topcoat }}-${{ matrix.arch }}
+
+      - name: Install topcoat-cli
+        if: steps.topcoat.outputs.cache-hit != 'true'
+        run: cargo install topcoat-cli --locked --version "${{ steps.version.outputs.topcoat }}"
+
+      - name: Build juuz
+        run: |
+          cargo build --release --locked --bin juuz
+          topcoat asset bundle --release
+
+      - name: Collect files
+        run: |
+          mkdir dist
+          cp target/release/juuz dist/
+          cp -r target/release/assets dist/assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist
+          if-no-files-found: error
+
+  docker:
+    name: Publish image
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Resolve tags
+        env:
+          TAGS: ${{ inputs.tags }}
+        run: |
+          image="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          {
+            echo "TAGS<<EOF"
+            for tag in ${TAGS//,/ }; do echo "${image}:${tag}"; done
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: artifacts
+
+      - name: Create runtime Dockerfile
+        run: |
+          mkdir -p artifacts/data artifacts/music
+          cat > artifacts/Dockerfile <<'EOF'
+          FROM debian:bookworm-slim
+          ARG TARGETARCH
+          COPY --chmod=755 dist-${TARGETARCH}/juuz /usr/local/bin/juuz
+          COPY dist-${TARGETARCH}/assets /usr/local/bin/assets
+          COPY --chown=1000:1000 data /data
+          COPY --chown=1000:1000 music /music
+          USER 1000:1000
+          WORKDIR /
+          EXPOSE 4533
+          VOLUME /data
+          HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+              CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/4533' || exit 1
+          ENTRYPOINT ["juuz"]
+          EOF
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: artifacts
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.TAGS }}
