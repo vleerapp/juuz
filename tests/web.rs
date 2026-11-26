@@ -2490,3 +2490,69 @@ async fn removing_a_library_with_songs_in_use_works() {
     let after = h.ok("getMusicFolders", "").await["musicFolders"]["musicFolder"].clone();
     assert_eq!(after.as_array().unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn web_lyrics_and_star_use_the_session() {
+    let h = Harness::new();
+    let path = make_track(
+        h.music.path(),
+        "Band/2025 - Record/01 - Quiet.wav",
+        1,
+        &Tags {
+            title: Some("Quiet"),
+            artist: Some("Band"),
+            album: Some("Record"),
+            track: Some(1),
+            ..Default::default()
+        },
+    );
+    std::fs::write(
+        path.with_extension("lrc"),
+        "[00:05.00]first\n[00:07.50]second\n",
+    )
+    .unwrap();
+    h.scan().await;
+    let id = h.ok("search3", "query=quiet").await["searchResult3"]["song"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert_ne!(
+        page(&h, &format!("/lyrics?id={id}"), None).await.status,
+        StatusCode::OK
+    );
+    let session = login(&h, USER, PASS).await;
+    let lyrics = page(&h, &format!("/lyrics?id={id}"), Some(&session)).await;
+    assert_eq!(lyrics.status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&lyrics.body).unwrap();
+    assert_eq!(v["synced"], true);
+    assert_eq!(v["lines"][0]["gap"], true);
+    assert_eq!(v["lines"][1]["text"], "first");
+    assert_eq!(v["lines"][2]["start"], 7500);
+
+    assert_ne!(
+        post(&h, &format!("/star?id={id}&on=true"), None, "")
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let starred = post(&h, &format!("/star?id={id}&on=true"), Some(&session), "").await;
+    assert_eq!(starred.status, StatusCode::NO_CONTENT);
+    let list = h.ok("getStarred2", "").await;
+    assert_eq!(list["starred2"]["song"][0]["id"], id.as_str());
+    let html = page(&h, "/?view=songs", Some(&session)).await.text();
+    assert!(html.contains("data-starred=\"1\""), "{html}");
+    let cleared = post(&h, &format!("/star?id={id}&on=false"), Some(&session), "").await;
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT);
+    assert!(
+        h.ok("getStarred2", "").await["starred2"]["song"]
+            .as_array()
+            .is_none_or(|s| s.is_empty())
+    );
+    assert_eq!(
+        post(&h, "/star?id=nope&on=true", Some(&session), "")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}

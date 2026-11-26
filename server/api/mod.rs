@@ -6,6 +6,7 @@ pub mod group;
 pub mod library;
 pub mod login_post;
 pub mod logout_post;
+pub mod lyrics_get;
 pub mod output_post;
 pub mod outputs;
 pub mod play_get;
@@ -15,6 +16,7 @@ pub mod queue_post;
 pub mod rest;
 pub mod scrobble_post;
 pub mod server;
+pub mod star_post;
 pub mod users;
 
 use axum::Router;
@@ -39,6 +41,8 @@ pub fn router(st: AppState) -> Router {
             "/scrobble",
             axum::routing::post(scrobble_post::scrobble),
         )
+        .route("/star", axum::routing::post(star_post::star))
+        .route("/lyrics", axum::routing::get(lyrics_get::lyrics))
         .route("/playback", axum::routing::post(playback_post::event))
         .route("/outputs", axum::routing::get(outputs::index_get::outputs))
         .route("/outputs/scan", axum::routing::post(outputs::scan_post::scan))
