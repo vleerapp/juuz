@@ -158,7 +158,7 @@ async fn login_dashboard_logout() {
 async fn every_page_renders_html_not_subsonic_json() {
     let h = Harness::new();
     let session = login(&h, USER, PASS).await;
-    for uri in ["/", "/library", "/account", "/users", "/server"] {
+    for uri in ["/", "/stats", "/account", "/users", "/server"] {
         let r = page(&h, uri, Some(&session)).await;
         assert_eq!(r.status, StatusCode::OK, "{uri}");
         assert!(
@@ -252,7 +252,7 @@ async fn admin_actions_are_gated() {
     for uri in ["/users", "/server"] {
         let r = page(&h, uri, Some(&bob)).await;
         assert_eq!(r.status, StatusCode::SEE_OTHER, "{uri}");
-        assert_eq!(location(&r), "/?n=forbidden", "{uri}");
+        assert_eq!(location(&r), "/stats?n=forbidden", "{uri}");
     }
 
     for (uri, body) in [
@@ -263,7 +263,7 @@ async fn admin_actions_are_gated() {
     ] {
         let r = post(&h, uri, Some(&bob), body).await;
         assert_eq!(r.status, StatusCode::SEE_OTHER, "{uri}");
-        assert_eq!(location(&r), "/?n=forbidden", "{uri}");
+        assert_eq!(location(&r), "/stats?n=forbidden", "{uri}");
     }
     let users = h.ok("getUsers", "").await;
     assert_eq!(users["users"]["user"].as_array().unwrap().len(), 2);
@@ -292,9 +292,9 @@ async fn granted_roles_open_matching_pages_only() {
     );
 
     let scan = post(&h, "/server/scan", Some(&sam), "").await;
-    assert_ne!(location(&scan), "/?n=forbidden");
+    assert_ne!(location(&scan), "/stats?n=forbidden");
     let users = page(&h, "/users", Some(&sam)).await;
-    assert_eq!(location(&users), "/?n=forbidden");
+    assert_eq!(location(&users), "/stats?n=forbidden");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -436,7 +436,7 @@ async fn stats_reflect_plays() {
         .await;
 
     let session = login(&h, USER, PASS).await;
-    let dash = page(&h, "/?range=all", Some(&session)).await.text();
+    let dash = page(&h, "/stats?range=all", Some(&session)).await.text();
     assert!(dash.contains("Uniquetitle"));
     assert!(dash.contains("Stat Band"));
     assert!(dash.contains("Stat Album"));
@@ -444,9 +444,11 @@ async fn stats_reflect_plays() {
 
     h.ok("createUser", "username=dave&password=davepw").await;
     let dave = login(&h, "dave", "davepw").await;
-    let mine = page(&h, "/?range=all&scope=all", Some(&dave)).await.text();
+    let mine = page(&h, "/stats?range=all&scope=all", Some(&dave))
+        .await
+        .text();
     assert!(!mine.contains("Uniquetitle"));
-    let everyone = page(&h, "/?range=all&scope=all", Some(&session))
+    let everyone = page(&h, "/stats?range=all&scope=all", Some(&session))
         .await
         .text();
     assert!(everyone.contains("Uniquetitle"));
@@ -582,7 +584,7 @@ async fn lastfm_link_uses_callback_with_state() {
 async fn live_regions_and_events_need_a_session() {
     let h = Harness::new();
     let session = login(&h, USER, PASS).await;
-    let dash_response = page(&h, "/", Some(&session)).await;
+    let dash_response = page(&h, "/stats", Some(&session)).await;
     assert_eq!(dash_response.headers[header::CACHE_CONTROL], "no-store");
     let dash = dash_response.text();
     assert!(dash.contains("data-live=\"stats\""));
@@ -852,7 +854,7 @@ async fn chart_days_follow_the_browser_timezone() {
     let session = login(&h, USER, PASS).await;
     let last_label = async |offset: &str| {
         let cookies = format!("{session}; juuz_tz={offset}");
-        let html = page(&h, "/", Some(&cookies)).await.text();
+        let html = page(&h, "/stats", Some(&cookies)).await.text();
         let from = html.find("class=\"chart\"").unwrap();
         let end = html[from..].find("</section>").unwrap();
         let chart = &html[from..from + end];
@@ -974,7 +976,7 @@ async fn libraries_page_is_permissioned_and_manages_libraries() {
     let admin = login(&h, USER, PASS).await;
 
     let denied = page(&h, "/server", Some(&bob)).await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(location(&denied), "/stats?n=forbidden");
     let shown = page(&h, "/server", Some(&lee)).await;
     assert_eq!(shown.status, StatusCode::OK);
     let html = shown.text();
@@ -1012,7 +1014,7 @@ async fn libraries_page_is_permissioned_and_manages_libraries() {
         &format!("id={id}"),
     )
     .await;
-    assert_eq!(location(&no_delete), "/?n=forbidden");
+    assert_eq!(location(&no_delete), "/stats?n=forbidden");
     let removed = post(
         &h,
         "/server/libraries/delete",
@@ -1075,7 +1077,7 @@ async fn missing_songs_are_kept_until_removed_with_delete_permission() {
     let bob = login(&h, "bob", "bobpw").await;
     let dee = login(&h, "dee", "deepw").await;
     let denied = post(&h, "/server/libraries/missing", Some(&bob), "id=1").await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(location(&denied), "/stats?n=forbidden");
     assert_eq!(count(&h).await, 2);
 
     let shown = page(&h, "/server", Some(&dee)).await;
@@ -1118,11 +1120,11 @@ async fn player_streams_with_the_session_cookie_only() {
     assert_eq!(anon_art.status, StatusCode::UNAUTHORIZED);
 
     let admin = login(&h, USER, PASS).await;
-    let listing = page(&h, "/library?view=songs", Some(&admin)).await;
+    let listing = page(&h, "/?view=songs", Some(&admin)).await;
     assert_eq!(listing.status, StatusCode::OK);
     let html = listing.text();
     assert!(html.contains(&format!("data-play=\"{song}\"")), "{html}");
-    assert!(html.contains("href=\"/library\""));
+    assert!(html.contains("href=\"/\""));
     let played = page(&h, &format!("/play?id={song}"), Some(&admin)).await;
     assert_eq!(played.status, StatusCode::OK);
     assert!(
@@ -1139,8 +1141,8 @@ async fn player_streams_with_the_session_cookie_only() {
     let mute = login(&h, "mute", "mutepw").await;
     let blocked = page(&h, &format!("/play?id={song}"), Some(&mute)).await;
     assert_eq!(blocked.status, StatusCode::FORBIDDEN);
-    let denied = page(&h, "/library?view=songs", Some(&mute)).await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    let denied = page(&h, "/?view=songs", Some(&mute)).await;
+    assert_eq!(location(&denied), "/stats");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1175,13 +1177,13 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
     let bob = login(&h, "bob", "bobpw").await;
     let cat = login(&h, "cat", "catpw").await;
 
-    let plain = page(&h, "/library?view=songs", Some(&bob)).await.text();
+    let plain = page(&h, "/?view=songs", Some(&bob)).await.text();
     assert!(plain.contains("Digital Love"));
     assert!(!plain.contains("choose"));
     assert!(!plain.contains("fetch metadata"));
     let blocked = page(&h, &format!("/library/candidates?id={song}"), Some(&bob)).await;
-    assert_eq!(location(&blocked), "/?n=forbidden");
-    let listing = page(&h, "/library?view=songs", Some(&cat)).await;
+    assert_eq!(location(&blocked), "/stats?n=forbidden");
+    let listing = page(&h, "/?view=songs", Some(&cat)).await;
     assert_eq!(listing.status, StatusCode::OK);
     let html = listing.text();
     assert!(html.contains("Digital Love"));
@@ -1201,7 +1203,7 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
         &format!("id={song}&omm=not-an-id"),
     )
     .await;
-    assert_eq!(location(&bad), "/library?n=invalid");
+    assert_eq!(location(&bad), "/?n=invalid");
     let picked = post(
         &h,
         "/library/pick",
@@ -1209,8 +1211,8 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
         &format!("id={song}&omm=1234567890"),
     )
     .await;
-    assert_eq!(location(&picked), "/library?n=catalogue-matched");
-    let matched = page(&h, "/library?view=songs&status=matched", Some(&cat))
+    assert_eq!(location(&picked), "/?n=catalogue-matched");
+    let matched = page(&h, "/?view=songs&status=matched", Some(&cat))
         .await
         .text();
     assert!(matched.contains(">1234567890<"), "{matched}");
@@ -1219,12 +1221,12 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
     assert_eq!(song_json["song"]["ommId"], "omm:song:1234567890");
 
     let cleared = post(&h, "/library/clear", Some(&cat), &format!("id={song}")).await;
-    assert_eq!(location(&cleared), "/library?n=catalogue-cleared");
+    assert_eq!(location(&cleared), "/?n=catalogue-cleared");
     let wiped = h.ok("getSong", &format!("id={song}")).await["song"].clone();
     assert!(wiped.get("ommId").is_none(), "{wiped}");
     assert!(wiped.get("year").is_none(), "{wiped}");
     assert!(wiped.get("genre").is_none(), "{wiped}");
-    let after = page(&h, "/library?view=songs&status=matched", Some(&cat))
+    let after = page(&h, "/?view=songs&status=matched", Some(&cat))
         .await
         .text();
     assert!(!after.contains("1234567890"));
@@ -1235,7 +1237,7 @@ async fn catalogue_lists_songs_and_lets_a_match_be_chosen() {
         &format!("id={song}&omm=omm:song:1234567890"),
     )
     .await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(location(&denied), "/stats?n=forbidden");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1277,7 +1279,7 @@ async fn choosing_another_match_replaces_what_the_wrong_one_filled() {
             &format!("id={song}&omm={omm}"),
         )
         .await;
-        assert_eq!(location(&r), "/library?n=catalogue-matched");
+        assert_eq!(location(&r), "/?n=catalogue-matched");
         let v = h.ok("getSong", &format!("id={song}")).await["song"].clone();
         assert_eq!(v["ommId"], omm);
         assert_eq!(v["year"], year, "{v}");
@@ -1312,7 +1314,7 @@ async fn admin_restricts_a_user_to_chosen_libraries() {
     assert_eq!(folders("bob", "bobpw").await, 2);
 
     let denied = post(&h, "/users/libraries", Some(&bob), "username=bob&lib_1=on").await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(location(&denied), "/stats?n=forbidden");
     assert_eq!(folders("bob", "bobpw").await, 2);
 
     let saved = post(
@@ -1328,7 +1330,7 @@ async fn admin_restricts_a_user_to_chosen_libraries() {
         .server
         .state
         .db
-        .run(|c| Ok(juuz::db::users::by_name(c, "bob")?.unwrap()))
+        .run(|c| Ok(juuz::server::utils::db::users::by_name(c, "bob")?.unwrap()))
         .await
         .unwrap();
     assert_eq!(bob_row.upload_library_id, Some(1));
@@ -1349,7 +1351,7 @@ async fn admin_restricts_a_user_to_chosen_libraries() {
         .server
         .state
         .db
-        .run(|c| Ok(juuz::db::users::by_name(c, USER)?.unwrap()))
+        .run(|c| Ok(juuz::server::utils::db::users::by_name(c, USER)?.unwrap()))
         .await
         .unwrap();
     assert_eq!(admin_row.upload_library_id, Some(family));
@@ -1375,7 +1377,7 @@ async fn api_key_section_follows_the_keys_permission() {
     assert!(shown.contains("create key"));
 
     let blocked = post(&h, "/account/apikeys", Some(&kim), "name=nope").await;
-    assert_eq!(location(&blocked), "/?n=forbidden");
+    assert_eq!(location(&blocked), "/stats?n=forbidden");
     let made = post(&h, "/account/apikeys", Some(&lou), "name=laptop").await;
     assert_eq!(made.status, StatusCode::OK);
     assert!(made.text().contains("shown once"));
@@ -1430,7 +1432,7 @@ async fn replaygain_tags_reach_the_play_buttons() {
     );
     h.scan().await;
     let admin = login(&h, USER, PASS).await;
-    let html = page(&h, "/library?view=songs", Some(&admin)).await.text();
+    let html = page(&h, "/?view=songs", Some(&admin)).await.text();
     assert!(html.contains("data-gain=\"-3.20\""), "{html}");
     assert!(
         html.contains("data-gain=\"\""),
@@ -1498,7 +1500,7 @@ async fn web_player_plays_reach_now_playing_and_stats() {
         .await;
         assert_eq!(r.status, StatusCode::NO_CONTENT);
     }
-    let stats = page(&h, "/", Some(&admin)).await.text();
+    let stats = page(&h, "/stats", Some(&admin)).await.text();
     assert!(stats.contains("One"), "recent plays should list the song");
 }
 
@@ -1569,7 +1571,7 @@ async fn playback_events_become_sessions_in_the_stats() {
         tokio::time::sleep(std::time::Duration::from_millis(15)).await;
     }
 
-    let html = page(&h, "/", Some(&admin)).await.text();
+    let html = page(&h, "/stats", Some(&admin)).await.text();
     assert!(html.contains("66%"), "two of three plays completed: {html}");
     assert!(html.contains("33%"), "one of three plays skipped: {html}");
     assert!(html.contains("plays by hour"));
@@ -1595,7 +1597,7 @@ async fn library_songs_are_chunked_and_sortable() {
     h.scan().await;
     let admin = login(&h, USER, PASS).await;
 
-    let all = page(&h, "/library?view=songs", Some(&admin)).await.text();
+    let all = page(&h, "/?view=songs", Some(&admin)).await.text();
     assert!(all.contains("data-total=\"3\""), "{all}");
     let titles = |html: &str| -> Vec<String> {
         html.split("<strong>")
@@ -1605,18 +1607,18 @@ async fn library_songs_are_chunked_and_sortable() {
     };
     assert_eq!(titles(&all), ["Bravo", "Alpha", "Charlie"]);
 
-    let sorted = page(&h, "/library?view=songs&sort=title&dir=asc", Some(&admin))
+    let sorted = page(&h, "/?view=songs&sort=title&dir=asc", Some(&admin))
         .await
         .text();
     assert_eq!(titles(&sorted), ["Alpha", "Bravo", "Charlie"]);
-    let reversed = page(&h, "/library?view=songs&sort=title&dir=desc", Some(&admin))
+    let reversed = page(&h, "/?view=songs&sort=title&dir=desc", Some(&admin))
         .await
         .text();
     assert_eq!(titles(&reversed), ["Charlie", "Bravo", "Alpha"]);
 
     let window = page(
         &h,
-        "/library?view=songs&sort=title&dir=asc&offset=1&limit=1",
+        "/?view=songs&sort=title&dir=asc&offset=1&limit=1",
         Some(&admin),
     )
     .await
@@ -1625,9 +1627,7 @@ async fn library_songs_are_chunked_and_sortable() {
     assert!(window.contains("data-total=\"3\""));
     assert!(window.contains("data-offset=\"1\""));
 
-    let filtered = page(&h, "/library?view=songs&q=alp", Some(&admin))
-        .await
-        .text();
+    let filtered = page(&h, "/?view=songs&q=alp", Some(&admin)).await.text();
     assert!(filtered.contains("data-total=\"1\""));
     assert_eq!(titles(&filtered), ["Alpha"]);
 }
@@ -1652,15 +1652,11 @@ async fn album_page_shows_its_genres() {
     let found = h.ok("search3", "query=album").await["searchResult3"].clone();
     let album = found["album"][0]["id"].as_str().unwrap().to_string();
     let admin = login(&h, USER, PASS).await;
-    let html = page(
-        &h,
-        &format!("/library?view=songs&album={album}"),
-        Some(&admin),
-    )
-    .await
-    .text();
+    let html = page(&h, &format!("/?view=songs&album={album}"), Some(&admin))
+        .await
+        .text();
     assert!(html.contains("Shoegaze"), "{html}");
-    let grid = page(&h, "/library?view=albums", Some(&admin)).await.text();
+    let grid = page(&h, "/?view=albums", Some(&admin)).await.text();
     assert!(!grid.contains("Shoegaze"));
 }
 
@@ -1687,27 +1683,19 @@ async fn artist_pages_link_albums_and_songs() {
         .unwrap()
         .to_string();
     let admin = login(&h, USER, PASS).await;
-    let list = page(&h, "/library?view=artists", Some(&admin)).await.text();
+    let list = page(&h, "/?view=artists", Some(&admin)).await.text();
     assert!(list.contains("Band"), "{list}");
     assert!(list.contains(&format!("artist={artist}")), "{list}");
-    let detail = page(
-        &h,
-        &format!("/library?view=artists&artist={artist}"),
-        Some(&admin),
-    )
-    .await
-    .text();
+    let detail = page(&h, &format!("/?view=artists&artist={artist}"), Some(&admin))
+        .await
+        .text();
     assert!(detail.contains("Record"), "{detail}");
     assert!(detail.contains(&format!("album={album}")), "{detail}");
-    let tracks = page(
-        &h,
-        &format!("/library?view=songs&album={album}"),
-        Some(&admin),
-    )
-    .await
-    .text();
+    let tracks = page(&h, &format!("/?view=songs&album={album}"), Some(&admin))
+        .await
+        .text();
     assert!(tracks.contains(&format!("artist={artist}")), "{tracks}");
-    let songs = page(&h, "/library?view=songs", Some(&admin)).await.text();
+    let songs = page(&h, "/?view=songs", Some(&admin)).await.text();
     assert!(songs.contains(&format!("artist={artist}")), "{songs}");
     assert!(songs.contains(&format!("album={album}")), "{songs}");
 }
@@ -1746,7 +1734,7 @@ async fn playlists_view_lists_opens_and_edits() {
     let bob = login(&h, "bob", "bobpw").await;
     let ann = login(&h, "ann", "annpw").await;
 
-    let empty = page(&h, "/library?view=playlists", Some(&bob)).await.text();
+    let empty = page(&h, "/?view=playlists", Some(&bob)).await.text();
     assert!(empty.contains("/library/playlists/create"), "{empty}");
     let made = post(
         &h,
@@ -1757,8 +1745,7 @@ async fn playlists_view_lists_opens_and_edits() {
     .await;
     let target = location(&made);
     assert!(
-        target.starts_with("/library?view=playlists&playlist=")
-            && target.ends_with("&n=playlist-saved"),
+        target.starts_with("/?view=playlists&playlist=") && target.ends_with("&n=playlist-saved"),
         "{target}"
     );
     let id = target
@@ -1770,7 +1757,7 @@ async fn playlists_view_lists_opens_and_edits() {
         .unwrap()
         .to_string();
     let bad = post(&h, "/library/playlists/create", Some(&bob), "name=%20%20").await;
-    assert_eq!(location(&bad), "/library?view=playlists&n=invalid");
+    assert_eq!(location(&bad), "/?view=playlists&n=invalid");
 
     let mut body = format!("playlistId={id}");
     for s in &ids {
@@ -1778,19 +1765,15 @@ async fn playlists_view_lists_opens_and_edits() {
     }
     h.ok("updatePlaylist", &body).await;
 
-    let listing = page(&h, "/library?view=playlists", Some(&bob)).await.text();
+    let listing = page(&h, "/?view=playlists", Some(&bob)).await.text();
     assert!(listing.contains("Road trip"), "{listing}");
     assert!(
         listing.contains(&format!("data-play-list=\"{id}\"")),
         "{listing}"
     );
-    let open = page(
-        &h,
-        &format!("/library?view=playlists&playlist={id}"),
-        Some(&bob),
-    )
-    .await
-    .text();
+    let open = page(&h, &format!("/?view=playlists&playlist={id}"), Some(&bob))
+        .await
+        .text();
     assert!(open.contains("data-queue"), "{open}");
     assert!(open.contains("/library/playlists/rename"), "{open}");
     assert!(
@@ -1799,7 +1782,7 @@ async fn playlists_view_lists_opens_and_edits() {
     );
     let filtered = page(
         &h,
-        &format!("/library?view=playlists&playlist={id}&q=two"),
+        &format!("/?view=playlists&playlist={id}&q=two"),
         Some(&bob),
     )
     .await
@@ -1807,16 +1790,12 @@ async fn playlists_view_lists_opens_and_edits() {
     assert!(filtered.contains("Two"), "{filtered}");
     assert!(!filtered.contains(">One<"), "{filtered}");
 
-    let theirs = page(
-        &h,
-        &format!("/library?view=playlists&playlist={id}"),
-        Some(&ann),
-    )
-    .await
-    .text();
+    let theirs = page(&h, &format!("/?view=playlists&playlist={id}"), Some(&ann))
+        .await
+        .text();
     assert!(!theirs.contains("Road trip"), "{theirs}");
     let denied = post(&h, "/library/playlists/create", Some(&ann), "name=nope").await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(location(&denied), "/stats?n=forbidden");
     let stolen = post(
         &h,
         "/library/playlists/delete",
@@ -1824,7 +1803,7 @@ async fn playlists_view_lists_opens_and_edits() {
         &format!("id={id}"),
     )
     .await;
-    assert_eq!(location(&stolen), "/?n=forbidden");
+    assert_eq!(location(&stolen), "/stats?n=forbidden");
 
     let renamed = post(
         &h,
@@ -1861,11 +1840,8 @@ async fn playlists_view_lists_opens_and_edits() {
         &format!("id={id}"),
     )
     .await;
-    assert_eq!(
-        location(&gone),
-        "/library?view=playlists&n=playlist-deleted"
-    );
-    let after = page(&h, "/library?view=playlists", Some(&bob)).await.text();
+    assert_eq!(location(&gone), "/?view=playlists&n=playlist-deleted");
+    let after = page(&h, "/?view=playlists", Some(&bob)).await.text();
     assert!(!after.contains("Long drive"), "{after}");
 }
 
@@ -1901,25 +1877,17 @@ async fn songs_can_be_added_to_a_playlist_from_the_web() {
         .unwrap()
         .to_string();
 
-    let open = page(
-        &h,
-        &format!("/library?view=playlists&playlist={id}"),
-        Some(&bob),
-    )
-    .await
-    .text();
+    let open = page(&h, &format!("/?view=playlists&playlist={id}"), Some(&bob))
+        .await
+        .text();
     assert!(open.contains(&format!("view=songs&amp;add={id}")), "{open}");
-    let adding = page(
-        &h,
-        &format!("/library?view=songs&add={id}&q=one"),
-        Some(&bob),
-    )
-    .await
-    .text();
+    let adding = page(&h, &format!("/?view=songs&add={id}&q=one"), Some(&bob))
+        .await
+        .text();
     assert!(adding.contains("/library/playlists/add"), "{adding}");
     assert!(adding.contains("adding to"), "{adding}");
     assert!(adding.contains("data-pick="), "{adding}");
-    let foreign = page(&h, &format!("/library?view=songs&add={id}"), Some(&eve))
+    let foreign = page(&h, &format!("/?view=songs&add={id}"), Some(&eve))
         .await
         .text();
     assert!(!foreign.contains("/library/playlists/add"), "{foreign}");
@@ -1933,7 +1901,7 @@ async fn songs_can_be_added_to_a_playlist_from_the_web() {
     .await;
     assert_eq!(
         location(&added),
-        format!("/library?view=playlists&playlist={id}&n=playlist-saved")
+        format!("/?view=playlists&playlist={id}&n=playlist-saved")
     );
     let got = h.ok("getPlaylist", &format!("id={id}")).await["playlist"].clone();
     assert_eq!(got["songCount"], 1);
@@ -2010,13 +1978,9 @@ async fn playlist_songs_can_be_reordered() {
         ["One", "Two", "Three"]
     );
 
-    let open = page(
-        &h,
-        &format!("/library?view=playlists&playlist={id}"),
-        Some(&bob),
-    )
-    .await
-    .text();
+    let open = page(&h, &format!("/?view=playlists&playlist={id}"), Some(&bob))
+        .await
+        .text();
     assert!(open.contains("data-slot=\"0\""), "{open}");
     assert!(
         open.contains(&format!("data-song=\"{}\"", ids[0])),
@@ -2146,23 +2110,21 @@ async fn search_is_fuzzy_and_spans_title_artist_and_album() {
     assert!(titles(&r).is_empty());
 
     let admin = login(&h, USER, PASS).await;
-    let hit = page(&h, "/library?view=songs&q=dgtl%20daft", Some(&admin))
+    let hit = page(&h, "/?view=songs&q=dgtl%20daft", Some(&admin))
         .await
         .text();
     assert!(
         hit.contains("Digital Love") && !hit.contains("Bohemian"),
         "{hit}"
     );
-    let albums = page(&h, "/library?view=albums&q=daft%20disc", Some(&admin))
+    let albums = page(&h, "/?view=albums&q=daft%20disc", Some(&admin))
         .await
         .text();
     assert!(
         albums.contains("Discovery") && !albums.contains("Opera"),
         "{albums}"
     );
-    let artists = page(&h, "/library?view=artists&q=qeen", Some(&admin))
-        .await
-        .text();
+    let artists = page(&h, "/?view=artists&q=qeen", Some(&admin)).await.text();
     assert!(
         artists.contains("Queen") && !artists.contains("Daft Punk"),
         "{artists}"
@@ -2301,7 +2263,7 @@ async fn a_browser_output_receives_timed_pcm_over_its_socket() {
     assert_eq!(frame[0], 1);
     assert_eq!(
         u16::from_le_bytes([frame[1], frame[2]]) as u32 * 100,
-        juuz::pcm::RATE
+        juuz::server::utils::pcm::RATE
     );
     assert_eq!(i32::from_le_bytes(frame[4..8].try_into().unwrap()), 500);
     let due = i64::from_le_bytes(frame[8..16].try_into().unwrap()) as f64;
@@ -2403,7 +2365,7 @@ async fn catalogue_lets_albums_and_artists_be_matched_by_hand() {
         Some(&bob),
     )
     .await;
-    assert_eq!(location(&blocked), "/?n=forbidden");
+    assert_eq!(location(&blocked), "/stats?n=forbidden");
 
     let albums = page(
         &h,
@@ -2429,13 +2391,13 @@ async fn catalogue_lets_albums_and_artists_be_matched_by_hand() {
         &format!("id={album_id}&omm=omm:artist:3456789012"),
     )
     .await;
-    assert_eq!(location(&bad), "/library?n=invalid");
+    assert_eq!(location(&bad), "/?n=invalid");
     for (route, id, omm) in [
         ("/library/pick/album", &album_id, "2345678901"),
         ("/library/pick/artist", &artist_id, "omm:artist:3456789012"),
     ] {
         let r = post(&h, route, Some(&admin), &format!("id={id}&omm={omm}")).await;
-        assert_eq!(location(&r), "/library?n=catalogue-matched");
+        assert_eq!(location(&r), "/?n=catalogue-matched");
     }
     let page_html = page(
         &h,
@@ -2453,7 +2415,7 @@ async fn catalogue_lets_albums_and_artists_be_matched_by_hand() {
         ("/library/clear/artist", &artist_id),
     ] {
         let r = post(&h, route, Some(&admin), &format!("id={id}")).await;
-        assert_eq!(location(&r), "/library?n=catalogue-cleared");
+        assert_eq!(location(&r), "/?n=catalogue-cleared");
     }
     let after = page(
         &h,
@@ -2477,7 +2439,7 @@ async fn refetch_all_metadata_needs_the_catalogue_role() {
     let bob = login(&h, "bob", "bobpw").await;
     let admin = login(&h, USER, PASS).await;
     let denied = post(&h, "/server/metadata/refetch", Some(&bob), "").await;
-    assert_eq!(location(&denied), "/?n=forbidden");
+    assert_eq!(location(&denied), "/stats?n=forbidden");
     let started = post(&h, "/server/metadata/refetch", Some(&admin), "").await;
     assert_eq!(location(&started), "/server?n=metadata-refetch");
     let html = page(&h, "/server", Some(&admin)).await.text();

@@ -367,7 +367,7 @@ async fn output_survives_restart_setting() {
         .server
         .state
         .db
-        .run(|c| Ok(juuz::db::settings::get(c, "jukebox_output")?))
+        .run(|c| Ok(juuz::server::utils::db::settings::get(c, "jukebox_output")?))
         .await
         .unwrap();
     assert!(saved.unwrap().contains("uuid:mock-1"));
@@ -447,7 +447,7 @@ async fn restart_resumes_the_session() {
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let st = &h.server.state;
-    let fresh = juuz::jukebox::Jukebox::new(
+    let fresh = juuz::server::utils::jukebox::Jukebox::new(
         st.db.clone(),
         st.crypto.clone(),
         4533,

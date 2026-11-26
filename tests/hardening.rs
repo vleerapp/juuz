@@ -166,7 +166,7 @@ async fn lyrics_for_titles_with_dots_land_next_to_the_song() {
 #[tokio::test(flavor = "multi_thread")]
 async fn token_auth_can_be_switched_off() {
     let h = Harness::build(None, |c| c.token_auth = false);
-    let token = juuz::auth::token_for(PASS, "saltsalt");
+    let token = juuz::server::utils::auth::token_for(PASS, "saltsalt");
     let v = h
         .get(&format!(
             "/rest/ping?u={USER}&t={token}&s=saltsalt&f=json&c=test"

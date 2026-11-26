@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use juuz::db::{libraries, users};
+use juuz::server::utils::db::{libraries, users};
 use serde_json::Value;
 
 fn tags<'a>(title: &'a str, artist: &'a str, album: &'a str) -> Tags<'a> {

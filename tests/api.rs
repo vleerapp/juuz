@@ -620,9 +620,11 @@ async fn watcher_move_keeps_user_data() {
     let new = root.join("Moved Elsewhere/Renamed/01 - Song.wav");
     let scanner = h.server.state.scanner.clone();
     let set = std::collections::HashSet::from([old.clone(), new.clone()]);
-    tokio::task::spawn_blocking(move || juuz::scanner::watch::process_paths(&scanner, set))
-        .await
-        .unwrap();
+    tokio::task::spawn_blocking(move || {
+        juuz::server::utils::scanner::watch::process_paths(&scanner, set)
+    })
+    .await
+    .unwrap();
 
     let songs = h.ok("search3", "query=song").await["searchResult3"]["song"]
         .as_array()
@@ -697,10 +699,10 @@ async fn cors_headers_are_present() {
 #[tokio::test(flavor = "multi_thread")]
 async fn users_without_a_stored_secret_upgrade_on_first_password_login() {
     let h = Harness::new();
-    let hash = juuz::auth::hash_password("oldpass").unwrap();
+    let hash = juuz::server::utils::auth::hash_password("oldpass").unwrap();
     {
         let conn = h.server.state.db.conn().unwrap();
-        juuz::db::users::create(&conn, "oldschool", &hash, None, false).unwrap();
+        juuz::server::utils::db::users::create(&conn, "oldschool", &hash, None, false).unwrap();
     }
     let salt = "s1";
     let token = md5_token("oldpass", salt);

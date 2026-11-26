@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use juuz::omm;
+use juuz::server::utils::omm;
 use serde_json::Value;
 
 fn result(v: &Value) -> &Value {
@@ -266,7 +266,7 @@ async fn client_honors_retry_after_on_rate_limit() {
             r#"{"data":{"id":"omm:artist:3456789012","type":"artist","attributes":{"name":"Daft Punk"}}}"#,
         ),
     ]);
-    let cfg = juuz::config::OmmConfig {
+    let cfg = juuz::server::utils::config::OmmConfig {
         enabled: true,
         base_url: mock.url.clone(),
         timeout_secs: 3,

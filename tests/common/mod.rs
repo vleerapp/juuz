@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use juuz::config::Config;
+use juuz::server::utils::config::Config;
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::tag::{Accessor, ItemKey, Tag, TagType};
@@ -21,7 +21,7 @@ pub const USER: &str = "admin";
 pub const PASS: &str = "pw";
 
 pub struct Harness {
-    pub server: juuz::Server,
+    pub server: juuz::server::utils::state::Server,
     pub music: TempDir,
     pub data: TempDir,
     app: Router,
@@ -73,7 +73,7 @@ impl Harness {
             cfg.omm.upload_timeout_secs = 3;
         }
         tweak(&mut cfg);
-        let server = juuz::init(cfg).unwrap();
+        let server = juuz::server::utils::state::init(cfg).unwrap();
         let app = server.router();
         Harness {
             server,
@@ -140,8 +140,8 @@ impl Harness {
     }
 
     async fn manage_user(&self, endpoint: &str, query: &str) -> Value {
-        use juuz::db::users::{self, RoleUpdate};
-        let p = juuz::params::Params::parse(query);
+        use juuz::server::utils::db::users::{self, RoleUpdate};
+        let p = juuz::server::utils::params::Params::parse(query);
         let st = &self.server.state;
         let name = p.get("username").unwrap_or_default().to_string();
         let roles = RoleUpdate {
@@ -167,7 +167,11 @@ impl Harness {
             email: p.get("email").map(str::to_string),
         };
         let credentials = match p.get("password") {
-            Some(pw) => Some(juuz::auth::credentials(&st.crypto, pw).await.unwrap()),
+            Some(pw) => Some(
+                juuz::server::utils::auth::credentials(&st.crypto, pw)
+                    .await
+                    .unwrap(),
+            ),
             None => None,
         };
         let endpoint = endpoint.to_string();
