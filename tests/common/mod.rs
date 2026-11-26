@@ -214,9 +214,16 @@ impl Harness {
 
     pub async fn scan(&self) -> u64 {
         let scanner = self.server.state.scanner.clone();
-        tokio::task::spawn_blocking(move || scanner.scan_blocking(false).unwrap().unwrap().scanned)
-            .await
-            .unwrap()
+        tokio::task::spawn_blocking(move || {
+            loop {
+                if let Some(summary) = scanner.scan_blocking(false).unwrap() {
+                    return summary.scanned;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+        .await
+        .unwrap()
     }
 
     pub async fn api_key(&self) -> String {
