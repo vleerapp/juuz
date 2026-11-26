@@ -416,14 +416,51 @@ fn fetched_plain(conn: &Connection, id: &str) -> Result<Option<String>, ApiError
     Ok(cached(conn, id)?.and_then(|c| c.content))
 }
 
-pub struct Line {
-    pub start: Option<i64>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct Word {
+    pub start: i64,
     pub text: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Line {
+    pub start: Option<i64>,
+    pub text: String,
+    pub end: Option<i64>,
+    pub words: Vec<Word>,
+    pub secondary: Option<String>,
+    pub gap: bool,
+}
+
+impl Line {
+    fn plain(start: Option<i64>, text: String) -> Line {
+        Line {
+            start,
+            text,
+            end: None,
+            words: Vec::new(),
+            secondary: None,
+            gap: false,
+        }
+    }
+
+    fn at(&self) -> i64 {
+        self.start.unwrap_or(0)
+    }
+}
+
+const MIN_GAP: i64 = 4000;
+const SUNG_BASE: i64 = 2000;
+const SUNG_PER_CHAR: i64 = 120;
+const INFERRED_GAP: i64 = 5000;
+
 fn parse_stamp(tag: &str) -> Option<i64> {
     let (m, rest) = tag.split_once(':')?;
-    let minutes: i64 = m.trim().parse().ok()?;
+    let m = m.trim();
+    if m.is_empty() || !m.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let minutes: i64 = m.parse().ok()?;
     let (s, frac) = match rest.split_once(['.', ':']) {
         Some((s, f)) => (s, f),
         None => (rest, ""),
@@ -432,11 +469,79 @@ fn parse_stamp(tag: &str) -> Option<i64> {
     let millis = if frac.is_empty() {
         0
     } else {
-        let digits: String = frac.chars().filter(char::is_ascii_digit).take(3).collect();
+        if !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let digits: String = frac.chars().take(3).collect();
         let scale = 10_i64.pow(3 - digits.len() as u32);
         digits.parse::<i64>().ok()? * scale
     };
     Some(minutes * 60_000 + seconds * 1000 + millis)
+}
+
+struct Timed {
+    text: String,
+    words: Vec<Word>,
+    end: Option<i64>,
+}
+
+fn parse_words(rest: &str, line_at: i64) -> Timed {
+    let mut pieces: Vec<(Option<i64>, String)> = vec![(None, String::new())];
+    let mut cursor = rest;
+    while let Some(open) = cursor.find('<') {
+        let (before, after) = cursor.split_at(open);
+        let stamped = after
+            .find('>')
+            .and_then(|close| parse_stamp(&after[1..close]).map(|at| (at, close)));
+        let Some(current) = pieces.last_mut() else {
+            break;
+        };
+        current.1.push_str(before);
+        match stamped {
+            Some((at, close)) => {
+                pieces.push((Some(at), String::new()));
+                cursor = &after[close + 1..];
+            }
+            None => {
+                current.1.push('<');
+                cursor = &after[1..];
+            }
+        }
+    }
+    if let Some(current) = pieces.last_mut() {
+        current.1.push_str(cursor);
+    }
+    if pieces.len() == 1 {
+        return Timed {
+            text: pieces.remove(0).1.trim().to_string(),
+            words: Vec::new(),
+            end: None,
+        };
+    }
+    let last = pieces.len() - 1;
+    let mut words: Vec<Word> = Vec::new();
+    let mut end = None;
+    for (i, (at, text)) in pieces.into_iter().enumerate() {
+        let at = at.unwrap_or(line_at);
+        if text.trim().is_empty() {
+            if let Some(previous) = words.last_mut() {
+                previous.text.push_str(&text);
+            }
+            if i == last {
+                end = Some(at);
+            }
+            continue;
+        }
+        words.push(Word { start: at, text });
+    }
+    if let Some(first) = words.first_mut() {
+        first.text = first.text.trim_start().to_string();
+    }
+    if let Some(final_word) = words.last_mut() {
+        final_word.text = final_word.text.trim_end().to_string();
+    }
+    let text = words.iter().map(|w| w.text.as_str()).collect();
+    Timed { text, words, end }
 }
 
 pub fn parse(text: &str) -> (bool, Vec<Line>) {
@@ -464,26 +569,94 @@ pub fn parse(text: &str) -> (bool, Vec<Line>) {
         }
         if stamps.is_empty() {
             if !(meta && rest.is_empty()) {
-                lines.push(Line {
-                    start: None,
-                    text: rest.to_string(),
-                });
+                lines.push(Line::plain(None, rest.to_string()));
             }
             continue;
         }
         synced = true;
+        let single = stamps.len() == 1;
+        let timed = parse_words(rest, stamps[0]);
         for ms in stamps {
-            lines.push(Line {
-                start: Some((ms - offset).max(0)),
-                text: rest.to_string(),
-            });
+            let mut line = Line::plain(Some(ms), timed.text.clone());
+            if single {
+                line.words = timed.words.clone();
+                line.end = timed.end;
+            }
+            lines.push(line);
         }
     }
     if synced {
+        let shift = |at: i64| (at - offset).max(0);
         lines.retain(|l| l.start.is_some());
+        for line in &mut lines {
+            line.start = line.start.map(shift);
+            line.end = line.end.map(shift);
+            for word in &mut line.words {
+                word.start = shift(word.start);
+            }
+        }
         lines.sort_by_key(|l| l.start);
     }
     (synced, lines)
+}
+
+pub fn parse_rich(text: &str) -> (bool, Vec<Line>) {
+    let (synced, lines) = parse(text);
+    if !synced {
+        return (false, lines);
+    }
+    let mut merged: Vec<Line> = Vec::with_capacity(lines.len());
+    for line in lines {
+        match merged.last_mut() {
+            Some(last)
+                if last.start == line.start && !last.text.is_empty() && !line.text.is_empty() =>
+            {
+                match &mut last.secondary {
+                    Some(secondary) => {
+                        secondary.push('\n');
+                        secondary.push_str(&line.text);
+                    }
+                    None => last.secondary = Some(line.text),
+                }
+            }
+            _ => merged.push(line),
+        }
+    }
+    let mut cleaned: Vec<Line> = Vec::with_capacity(merged.len());
+    for line in merged {
+        let blank = line.text.is_empty();
+        let prev_blank = cleaned.last().is_none_or(|l| l.text.is_empty());
+        if blank && prev_blank {
+            continue;
+        }
+        cleaned.push(line);
+    }
+    let mut out: Vec<Line> = Vec::with_capacity(cleaned.len());
+    for (i, line) in cleaned.iter().enumerate() {
+        out.push(line.clone());
+        let Some(next) = cleaned.get(i + 1) else {
+            continue;
+        };
+        if line.text.is_empty() || next.text.is_empty() {
+            continue;
+        }
+        let ends = line
+            .end
+            .unwrap_or(line.at() + SUNG_BASE + line.text.chars().count() as i64 * SUNG_PER_CHAR);
+        if next.at() - ends >= INFERRED_GAP {
+            out.push(Line::plain(Some(ends), String::new()));
+        }
+    }
+    if out.first().is_some_and(|l| l.at() >= MIN_GAP) {
+        out.insert(0, Line::plain(Some(0), String::new()));
+    }
+    for i in 0..out.len() {
+        out[i].gap = out[i].text.is_empty()
+            && out
+                .get(i + 1)
+                .is_some_and(|next| next.at() - out[i].at() >= MIN_GAP);
+    }
+    (true, out)
 }
 
 #[cfg(test)]
@@ -555,6 +728,65 @@ mod tests {
         assert_eq!(lines[0].start, Some(12_500));
         assert_eq!(lines[0].text, "hello");
         assert_eq!(lines[2].start, Some(65_500));
+    }
+
+    #[test]
+    fn word_stamps_are_stripped_from_the_line_text() {
+        let (synced, lines) =
+            parse("[00:01.00]<00:01.00>Hel<00:01.40>lo <00:01.80>world<00:02.50>\n[00:05.00]next");
+        assert!(synced);
+        assert_eq!(lines[0].text, "Hello world");
+        let words: Vec<(&str, i64)> = lines[0]
+            .words
+            .iter()
+            .map(|w| (w.text.as_str(), w.start))
+            .collect();
+        assert_eq!(words, [("Hel", 1000), ("lo ", 1400), ("world", 1800)]);
+        assert_eq!(lines[0].end, Some(2500));
+        assert!(lines[1].words.is_empty());
+    }
+
+    #[test]
+    fn offset_shifts_lines_and_words() {
+        let (_, lines) = parse("[offset:+500]\n[00:02.00]<00:02.00>hel<00:02.40>lo");
+        assert_eq!(lines[0].start, Some(1500));
+        assert_eq!(lines[0].words[1].start, 1900);
+    }
+
+    #[test]
+    fn rich_merges_same_stamp_lines_into_a_secondary() {
+        let (_, lines) = parse_rich(
+            "[00:01.00]いつか\n[00:01.00]itsuka\n[00:03.50]愛で\n[00:03.50]ai de\n[00:05.00]end",
+        );
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].secondary.as_deref(), Some("itsuka"));
+        assert_eq!(lines[1].secondary.as_deref(), Some("ai de"));
+        let (_, flat) = parse(
+            "[00:01.00]いつか\n[00:01.00]itsuka\n[00:03.50]愛で\n[00:03.50]ai de\n[00:05.00]end",
+        );
+        assert_eq!(flat.len(), 5);
+    }
+
+    #[test]
+    fn rich_collapses_blanks_and_marks_gaps() {
+        let (_, lines) = parse_rich("[00:01.00]\n[00:02.00]a\n[00:03.00]\n[00:04.00]\n[00:12.00]b");
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["a", "", "b"]);
+        assert!(lines[1].gap);
+        let (_, short) = parse_rich("[00:01.00]a\n[00:03.00]\n[00:05.00]b");
+        assert!(!short[1].gap);
+    }
+
+    #[test]
+    fn rich_adds_intro_and_inferred_gaps() {
+        let (_, intro) = parse_rich("[00:10.00]a");
+        assert_eq!(intro.len(), 2);
+        assert!(intro[0].gap);
+        let (_, silence) = parse_rich("[00:02.00]hello\n[00:40.00]world");
+        assert_eq!(silence.len(), 3);
+        assert!(silence[1].gap);
+        let (_, close) = parse_rich("[00:02.00]hello there friend\n[00:09.00]world");
+        assert_eq!(close.len(), 2);
     }
 
     #[test]
