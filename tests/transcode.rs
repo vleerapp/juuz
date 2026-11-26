@@ -366,3 +366,25 @@ async fn aac_transcode_is_decodable_adts() {
         assert!(rms > 0.03, "rate {rate}: decoded audio is silent ({rms})");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_first_plays_share_one_streamed_transcode() {
+    let h = Harness::new();
+    let id = upload_wav(&h, wav_bytes_spec(3, 30_000, 44100, 2), "shared").await;
+    let url = format!(
+        "/rest/stream?{}&id={id}&format=opus&maxBitRate=96",
+        h.auth()
+    );
+    let bodies = futures_util::future::join_all((0..4).map(|_| h.get(&url))).await;
+    for r in &bodies {
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.body, bodies[0].body);
+    }
+    let d = inspect(&bodies[0].body);
+    assert!(d.last_granule.abs_diff(u64::from(d.pre_skip) + 30 * 48000) <= 1);
+    let cached = walk(&h.data.path().join("cache/transcode"));
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert!(!cached[0].to_string_lossy().ends_with(".part"));
+    let again = h.get(&url).await;
+    assert_eq!(again.body, bodies[0].body);
+}

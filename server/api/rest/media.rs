@@ -197,18 +197,14 @@ pub async fn stream(ctx: Ctx) -> ApiResult {
             } else {
                 requested
             };
-            match transcoded_file(&ctx, &song, format, kbps).await {
-                Ok(path) => {
-                    return Ok(Reply::Raw(
-                        serve_file(&ctx.headers, &path, format.content_type(), None).await?,
-                    ));
-                }
-                Err(e) => tracing::warn!(
-                    "{} transcode of {} failed, serving original: {e:#}",
-                    format.extension(),
-                    song.id
-                ),
+            if let Some(resp) = transcoded(&ctx, &song, format, kbps).await? {
+                return Ok(Reply::Raw(resp));
             }
+            tracing::warn!(
+                "{} transcode of {} unavailable, serving original",
+                format.extension(),
+                song.id
+            );
         }
     }
     Ok(Reply::Raw(
@@ -245,6 +241,7 @@ fn evict_cache(dir: &Path, keep: &Path, limit: u64) {
     };
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
         .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().ends_with(".part"))
         .filter_map(|e| {
             let meta = e.metadata().ok()?;
             meta.is_file().then(|| {
@@ -271,49 +268,182 @@ fn evict_cache(dir: &Path, keep: &Path, limit: u64) {
     }
 }
 
-async fn transcoded_file(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Queued,
+    Done,
+    Failed,
+}
+
+#[derive(Clone)]
+struct Job {
+    part: PathBuf,
+    state: tokio::sync::watch::Receiver<JobState>,
+}
+
+static JOBS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Job>>> =
+    std::sync::LazyLock::new(Default::default);
+
+const CHUNK: usize = 64 * 1024;
+const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+fn transcode_job(st: &AppState, src: PathBuf, target: PathBuf, format: Format, kbps: i64) -> Job {
+    let mut jobs = JOBS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(job) = jobs.get(&target) {
+        return job.clone();
+    }
+    let dir = target.parent().map(Path::to_path_buf).unwrap_or_default();
+    let part = dir.join(format!(".{}.part", crate::server::utils::ids::random()));
+    let (tx, rx) = tokio::sync::watch::channel(JobState::Queued);
+    let job = Job {
+        part: part.clone(),
+        state: rx,
+    };
+    jobs.insert(target.clone(), job.clone());
+    drop(jobs);
+    let slots = st.transcode_slots.clone();
+    let label = src.display().to_string();
+    tokio::spawn(async move {
+        let result = async {
+            let _permit = slots.acquire_owned().await?;
+            tokio::fs::create_dir_all(&dir).await?;
+            let dest = target.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let result = crate::server::utils::transcode::transcode(
+                    &src,
+                    &part,
+                    format,
+                    (kbps * 1000) as i32,
+                )
+                .and_then(|()| std::fs::rename(&part, &dest).map_err(Into::into));
+                if result.is_err() {
+                    let _ = std::fs::remove_file(&part);
+                } else {
+                    evict_cache(&dir, &dest, TRANSCODE_CACHE_LIMIT);
+                }
+                result
+            })
+            .await??;
+            anyhow::Ok(())
+        }
+        .await;
+        if let Err(e) = &result {
+            tracing::warn!("{} transcode of {label} failed: {e:#}", format.extension());
+        }
+        JOBS.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&target);
+        let _ = tx.send(if result.is_ok() {
+            JobState::Done
+        } else {
+            JobState::Failed
+        });
+    });
+    job
+}
+
+async fn wait(state: &mut tokio::sync::watch::Receiver<JobState>) {
+    tokio::select! {
+        _ = state.changed() => {}
+        () = tokio::time::sleep(POLL) => {}
+    }
+}
+
+async fn open_job(job: &mut Job, target: &Path) -> Option<tokio::fs::File> {
+    loop {
+        if let Ok(f) = tokio::fs::File::open(&job.part).await {
+            return Some(f);
+        }
+        let state = *job.state.borrow();
+        match state {
+            JobState::Done => return tokio::fs::File::open(target).await.ok(),
+            JobState::Failed => return None,
+            JobState::Queued => wait(&mut job.state).await,
+        }
+    }
+}
+
+async fn next_chunk(
+    file: &mut tokio::fs::File,
+    state: &mut tokio::sync::watch::Receiver<JobState>,
+) -> Option<std::io::Result<bytes::Bytes>> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        match file.read(&mut buf).await {
+            Ok(0) => {}
+            Ok(n) => {
+                buf.truncate(n);
+                return Some(Ok(buf.into()));
+            }
+            Err(e) => return Some(Err(e)),
+        }
+        let current = *state.borrow();
+        match current {
+            JobState::Done => {
+                return match file.read(&mut buf).await {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        Some(Ok(buf.into()))
+                    }
+                    Err(e) => Some(Err(e)),
+                };
+            }
+            JobState::Failed => {
+                return Some(Err(std::io::Error::other("transcode failed")));
+            }
+            JobState::Queued => wait(state).await,
+        }
+    }
+}
+
+async fn transcoded(
     ctx: &Ctx,
     song: &SongFile,
     format: Format,
     kbps: i64,
-) -> anyhow::Result<PathBuf> {
-    let dir = ctx.st.cfg.transcode_dir();
-    let target = dir.join(format!(
+) -> Result<Option<Response>, ApiError> {
+    let target = ctx.st.cfg.transcode_dir().join(format!(
         "{}-{kbps}-{}.{}",
         song.id,
         song.mtime,
         format.extension()
     ));
     if target.exists() {
-        return Ok(target);
+        return serve_file(&ctx.headers, &target, format.content_type(), None)
+            .await
+            .map(Some);
     }
-    let _permit = ctx.st.transcode_slots.acquire().await?;
-    if target.exists() {
-        return Ok(target);
-    }
-    tokio::fs::create_dir_all(&dir).await?;
-    let (src, dest, tmp) = (
-        song.path.clone(),
-        target.clone(),
-        dir.join(format!(
-            ".{}.{}.part",
-            song.id,
-            crate::server::utils::ids::random()
-        )),
+    let mut job = transcode_job(&ctx.st, song.path.clone(), target.clone(), format, kbps);
+    let Some(mut file) = open_job(&mut job, &target).await else {
+        return Ok(None);
+    };
+    let mut state = job.state.clone();
+    let first = match next_chunk(&mut file, &mut state).await {
+        Some(Ok(chunk)) => chunk,
+        _ => return Ok(None),
+    };
+    let stream = futures_util::stream::unfold(
+        (Some(first), file, state),
+        |(pending, mut file, mut state)| async move {
+            if let Some(chunk) = pending {
+                return Some((Ok(chunk), (None, file, state)));
+            }
+            next_chunk(&mut file, &mut state)
+                .await
+                .map(|item| (item, (None, file, state)))
+        },
     );
-    tokio::task::spawn_blocking(move || {
-        let result =
-            crate::server::utils::transcode::transcode(&src, &tmp, format, (kbps * 1000) as i32)
-                .and_then(|()| std::fs::rename(&tmp, &dest).map_err(Into::into));
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        } else if let Some(parent) = dest.parent() {
-            evict_cache(parent, &dest, TRANSCODE_CACHE_LIMIT);
-        }
-        result
-    })
-    .await??;
-    Ok(target)
+    let mut resp = Response::new(Body::from_stream(stream));
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(format.content_type()),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    harden(headers);
+    Ok(Some(resp))
 }
 
 pub async fn download(ctx: Ctx) -> ApiResult {
@@ -578,17 +708,18 @@ pub async fn cover_response(
                         bytes,
                         "image/jpeg",
                         &format!("{hash}-{size}"),
+                        versioned,
                     ))
                 }
                 None => {
                     let mime = mime_of(&original);
-                    Ok(image_response(original, mime, &hash))
+                    Ok(image_response(original, mime, &hash, versioned))
                 }
             };
         }
         let original = load_art(&source).ok_or_else(|| ApiError::not_found("cover art"))?;
         let mime = mime_of(&original);
-        Ok(image_response(original, mime, &hash))
+        Ok(image_response(original, mime, &hash, versioned))
     })
     .await
     .map_err(|_| ApiError::generic("internal server error"))??;
